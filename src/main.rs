@@ -1,9 +1,5 @@
 use clap::Parser;
-use reqwest::blocking::get;
-use std::{
-    sync::{Arc, Mutex},
-    thread::JoinHandle,
-};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use url::Url;
 
