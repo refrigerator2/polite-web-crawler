@@ -1,2 +1,2 @@
 pub mod crawler_error;
-pub mod url_parsing;
+pub mod link_fetcher;
