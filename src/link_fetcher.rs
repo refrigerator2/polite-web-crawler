@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use crate::crawler_error::CrawlerError;
+use texting_robots::Robot;
 use url::Url;
 
 pub struct NotParsedPageData {
     pub url: Url,
-    pub robots: String,
     pub content: String,
+    pub delay: Option<f32>,
 }
 pub struct LinkFetcher {
     url: Url,
@@ -32,14 +33,25 @@ impl LinkFetcher {
         }
         Ok(())
     }
-    async fn get_robot_list(&self) -> Result<String, CrawlerError> {
-        let robot_url = Url::join(&self.url, "robots.txt")?;
+    async fn get_robot_list(&self) -> Result<Option<Robot>, CrawlerError> {
+        let domain = Url::domain(&self.url).unwrap();
+        let scheme = Url::scheme(&self.url);
+        let main_link = Url::parse((scheme.to_string() + "://" + domain).as_str());
+        if let Err(e) = main_link {
+            return Err(CrawlerError::InvalidUrl(e));
+        }
+        let main_link = main_link.unwrap();
+        let robot_url = Url::join(&main_link, "robots.txt")?;
         let response = self.client.get(robot_url).send().await?;
         if response.status().is_success() {
             let body = response.text().await?;
-            Ok(body)
+            let rclient = Robot::new("CrabCrawler", body.as_bytes()).unwrap();
+            if !rclient.allowed(self.url.as_str()) {
+                return Err(CrawlerError::NotAllowed());
+            }
+            Ok(Some(rclient))
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(String::new())
+            Ok(None)
         } else {
             let status_err = response.error_for_status().unwrap_err();
             Err(CrawlerError::Network(status_err))
@@ -60,14 +72,17 @@ impl LinkFetcher {
     pub async fn run(self) -> Result<NotParsedPageData, CrawlerError> {
         self.check_url().await?;
         let robs = self.get_robot_list().await?;
+        let mut delay = None;
+        if let Some(r) = robs {
+            delay = r.delay;
+        }
         let page = self.get_page().await?;
 
         let LinkFetcher { url, .. } = self;
-
         Ok(NotParsedPageData {
             url,
-            robots: robs,
             content: page,
+            delay,
         })
     }
 }
@@ -110,7 +125,6 @@ mod tests {
 
         assert_eq!(data.url, target_url);
         assert!(!data.content.is_empty());
-
         Ok(())
     }
 }
