@@ -5,4 +5,7 @@ pub enum CrawlerError {
 
     #[error("URL parsing error: {0}")]
     InvalidUrl(#[from] url::ParseError),
+
+    #[error("Url is not allowed")]
+    NotAllowed(),
 }
