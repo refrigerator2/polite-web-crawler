@@ -160,6 +160,23 @@ impl CrawlerDB {
 
         Ok(false)
     }
+    pub async fn get_domain_id_by_domain_name(
+        &self,
+        host: &str,
+    ) -> Result<Option<i64>, CrawlerError> {
+        let record = sqlx::query("SELECT dom_id FROM domains WHERE domain_string = ?")
+            .bind(host)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(row) = record {
+            if let Some(id) = row.get::<Option<i64>, _>("dom_id") {
+                return Ok(Some(id));
+            }
+        }
+
+        Ok(None)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -271,5 +288,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(exists, false);
+    }
+    #[tokio::test]
+    async fn test_get_domain_id() {
+        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
+
+        let res = db.save_domain("nobots.com", 0.0, "").await;
+        assert!(res.is_ok());
+        let res = db.get_domain_id_by_domain_name("nobots.com").await;
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().unwrap(), 1);
+        let res = db.get_domain_id_by_domain_name("smt.com").await;
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), None);
     }
 }
