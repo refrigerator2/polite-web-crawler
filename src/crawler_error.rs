@@ -8,4 +8,10 @@ pub enum CrawlerError {
 
     #[error("Url is not allowed")]
     NotAllowed(),
+
+    #[error("Database error: {0}")]
+    DbError(#[from] sqlx::Error),
+
+    #[error("Robots.txt parsing error: {0}")]
+    RobotParseError(#[from] anyhow::Error),
 }
