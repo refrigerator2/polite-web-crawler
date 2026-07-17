@@ -8,7 +8,6 @@ pub struct ParsedPage {
     pub clean_text: Option<String>,
     pub outbound_links: Vec<Url>,
     pub keywords: Option<Vec<String>>,
-    pub delay: f32,
     pub url: Url,
 }
 impl ParsedPage {
@@ -33,7 +32,6 @@ impl ParsedPage {
             clean_text: None,
             outbound_links: vec![],
             keywords,
-            delay: data.delay.unwrap_or(0.0),
             url: data.url.clone(),
         }
     }
@@ -156,7 +154,6 @@ mod tests {
         NotParsedPageData {
             url: Url::parse("https://example.com/blog/page1.html").unwrap(),
             content: html_content.to_string(),
-            delay: None,
         }
     }
     #[test]

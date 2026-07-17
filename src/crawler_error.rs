@@ -14,4 +14,7 @@ pub enum CrawlerError {
 
     #[error("Robots.txt parsing error: {0}")]
     RobotParseError(#[from] anyhow::Error),
+
+    #[error("No Domain")]
+    UrlDoesntContainDomain(),
 }
