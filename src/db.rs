@@ -224,7 +224,6 @@ mod tests {
             NotParsedPageData {
                 content: "smt".to_string(),
                 url: Url::parse("https://www.ronaldo.com").unwrap(),
-                delay: None,
             },
             None,
         )

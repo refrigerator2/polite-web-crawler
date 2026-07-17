@@ -7,10 +7,15 @@ use url::Url;
 pub struct NotParsedPageData {
     pub url: Url,
     pub content: String,
-    pub delay: Option<f32>,
+}
+#[derive(Debug)]
+pub struct DomainData {
+    pub domain_string: String,
+    pub robots: Option<String>,
+    pub delay: f32,
 }
 pub struct LinkFetcher {
-    url: Url,
+    pub url: Url,
     client: reqwest::Client,
 }
 impl LinkFetcher {
@@ -33,7 +38,7 @@ impl LinkFetcher {
         }
         Ok(())
     }
-    async fn get_robot_list(&self) -> Result<Option<Robot>, CrawlerError> {
+    async fn get_robot_list(&self) -> Result<Option<String>, CrawlerError> {
         let domain = Url::domain(&self.url).unwrap();
         let scheme = Url::scheme(&self.url);
         let main_link = Url::parse((scheme.to_string() + "://" + domain).as_str());
@@ -45,11 +50,7 @@ impl LinkFetcher {
         let response = self.client.get(robot_url).send().await?;
         if response.status().is_success() {
             let body = response.text().await?;
-            let rclient = Robot::new("CrabCrawler", body.as_bytes()).unwrap();
-            if !rclient.allowed(self.url.as_str()) {
-                return Err(CrawlerError::NotAllowed());
-            }
-            Ok(Some(rclient))
+            Ok(Some(body))
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(None)
         } else {
@@ -69,21 +70,40 @@ impl LinkFetcher {
             Err(CrawlerError::Network(status_err))
         }
     }
-    pub async fn run(self) -> Result<NotParsedPageData, CrawlerError> {
+    pub async fn get_domain_data(&mut self, user_agent: &str) -> Result<DomainData, CrawlerError> {
+        let domain = self.url.clone();
+
+        let domain = domain
+            .domain()
+            .ok_or(CrawlerError::UrlDoesntContainDomain())?;
+
+        let scheme = self.url.scheme();
+        let root_url = Url::parse(&format!("{}://{}/", scheme, domain))?;
+
+        let temp = self.url.clone();
+        self.url = root_url;
         self.check_url().await?;
-        let robs = self.get_robot_list().await?;
-        let mut delay = None;
-        if let Some(r) = robs {
-            delay = r.delay;
-        }
+
+        let robot_body = self.get_robot_list().await?;
+        self.url = temp;
+        let robots_str = robot_body.as_deref().unwrap_or("");
+        let robot_matcher = texting_robots::Robot::new(user_agent, robots_str.as_bytes())?;
+
+        let delay = robot_matcher.delay.unwrap_or(0.0);
+
+        Ok(DomainData {
+            domain_string: domain.to_string(),
+            robots: robot_body,
+            delay,
+        })
+    }
+    pub async fn get_page_data(self) -> Result<NotParsedPageData, CrawlerError> {
+        self.check_url().await?;
+
         let page = self.get_page().await?;
 
         let LinkFetcher { url, .. } = self;
-        Ok(NotParsedPageData {
-            url,
-            content: page,
-            delay,
-        })
+        Ok(NotParsedPageData { url, content: page })
     }
 }
 
@@ -121,10 +141,20 @@ mod tests {
         let target_url = Url::parse("https://www.google.com").unwrap();
         let fetcher = LinkFetcher::new(target_url.clone());
 
-        let data = fetcher.run().await?;
+        let data = fetcher.get_page_data().await?;
 
         assert_eq!(data.url, target_url);
         assert!(!data.content.is_empty());
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_get_domain() -> Result<(), CrawlerError> {
+        let target_url = Url::parse("https://www.google.com").unwrap();
+        let mut fetcher = LinkFetcher::new(target_url.clone());
+
+        let data = fetcher.get_domain_data("CrawlerTest").await?;
+        assert_eq!(data.domain_string, target_url.domain().unwrap());
+        assert_eq!(data.delay, 0.0);
         Ok(())
     }
 }
