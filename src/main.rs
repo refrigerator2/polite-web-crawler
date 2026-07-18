@@ -1,12 +1,10 @@
 use clap::Parser;
+use crawler::crawler_core::CrawlerCore;
 use crawler::crawler_error::CrawlerError;
 use crawler::link_fetcher::LinkFetcher;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use url::Url;
-
-const TUSKS_BUF_SIZE: usize = 1000;
-const TOKIO_WORKERS: u8 = 8;
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -24,34 +22,6 @@ fn parse_url(url: &str) -> Result<Url, String> {
 async fn main() {
     let args = Args::parse();
     let url = args.url;
-    let keywords = args.keywords;
-
-    let (tx, rx) = mpsc::channel::<Url>(TUSKS_BUF_SIZE);
-
-    let rx = Arc::new(tokio::sync::Mutex::new(rx));
-
-    tx.send(url).await.unwrap();
-
-    let mut workers = vec![];
-    for _ in 0..TOKIO_WORKERS {
-        let rx_clone = Arc::clone(&rx);
-        let tx_clone = tx.clone();
-
-        let handle = tokio::spawn(async move {
-            loop {
-                let mut rx_guard = rx_clone.lock().await;
-
-                if let Some(u) = rx_guard.recv().await {
-                    drop(rx_guard);
-                    //parsing
-                } else {
-                    break;
-                }
-            }
-        });
-        workers.push(handle);
-    }
-    for worker in workers {
-        let _ = worker.await;
-    }
+    let keywords = Arc::new(args.keywords);
+    let core = CrawlerCore::new(keywords);
 }

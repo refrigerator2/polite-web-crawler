@@ -1,11 +1,11 @@
 use crate::{crawler_error::CrawlerError, html_parser::ParsedPage, link_fetcher::DomainData};
-use std::str::FromStr;
-use texting_robots::Robot;
-
 use sqlx::{
     Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
+use std::str::FromStr;
+use std::sync::Arc;
+use texting_robots::Robot;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum UrlAccess {
@@ -15,6 +15,7 @@ pub enum UrlAccess {
     URLWithoutHost,
 }
 
+#[derive(Clone)]
 pub struct CrawlerDB {
     pool: SqlitePool,
 }
@@ -258,7 +259,7 @@ mod tests {
                 content: "smt".to_string(),
                 url: Url::parse("https://www.ronaldo.com").unwrap(),
             },
-            None,
+            Arc::default(),
         )
         .unwrap();
 

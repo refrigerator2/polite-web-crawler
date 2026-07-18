@@ -1,3 +1,4 @@
+pub mod crawler_core;
 pub mod crawler_error;
 pub mod db;
 pub mod html_parser;
