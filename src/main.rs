@@ -19,9 +19,12 @@ fn parse_url(url: &str) -> Result<Url, String> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), CrawlerError> {
     let args = Args::parse();
     let url = args.url;
     let keywords = Arc::new(args.keywords);
-    let core = CrawlerCore::new(keywords);
+
+    let core = CrawlerCore::new(keywords).await?;
+    core.run(url).await?;
+    Ok(())
 }
