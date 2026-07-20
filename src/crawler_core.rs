@@ -14,44 +14,50 @@ use std::{
 use tokio::sync::mpsc;
 use url::Url;
 
-const TUSKS_BUF_SIZE: usize = 1000;
-const TOKIO_WORKERS: u8 = 8;
-const DEFAULT_DB_NAME: &str = "sqlite://crawler.db/";
-const AGENT_NAME: &str = "Aah";
 const MAX_DB_RECONNECTS: usize = 3;
 
 pub struct CrawlerCore {
     keywords: Arc<Option<Vec<String>>>,
     db: CrawlerDB,
+    tokio_workers: usize,
+    agent_name: String,
     pages_crawled: Arc<AtomicUsize>,
     active_tasks: Arc<AtomicUsize>,
 }
 
 impl CrawlerCore {
-    pub async fn new(keywords: Arc<Option<Vec<String>>>) -> Result<CrawlerCore, CrawlerError> {
+    pub async fn new(
+        keywords: Arc<Option<Vec<String>>>,
+        db_name: String,
+        tokio_workers: usize,
+        agent_name: String,
+    ) -> Result<CrawlerCore, CrawlerError> {
         Ok(CrawlerCore {
             keywords,
-            db: CrawlerDB::new(DEFAULT_DB_NAME).await?,
+            db: CrawlerDB::new(&db_name).await?,
+            tokio_workers,
+            agent_name,
             pages_crawled: Arc::new(AtomicUsize::new(0)),
             active_tasks: Arc::new(AtomicUsize::new(0)),
         })
     }
 
     pub async fn run(&self, start_url: Url) -> Result<(), CrawlerError> {
-        let (tx, rx) = mpsc::channel::<Url>(TUSKS_BUF_SIZE);
+        let (tx, rx) = mpsc::channel::<Url>(self.tokio_workers * 500);
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
 
         tx.send(start_url).await.unwrap();
         self.active_tasks.store(1, Ordering::SeqCst);
         let mut workers = vec![];
 
-        for _ in 0..TOKIO_WORKERS {
+        for _ in 0..self.tokio_workers {
             let rx_clone = Arc::clone(&rx);
             let tx_clone = tx.clone();
             let db_clone = self.db.clone();
             let keywords_clone = Arc::clone(&self.keywords);
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
+            let agent_name_clone = self.agent_name.clone();
             let handle = tokio::spawn(async move {
                 Self::worker_loop(
                     rx_clone,
@@ -60,6 +66,7 @@ impl CrawlerCore {
                     keywords_clone,
                     counter_clone,
                     active_tasks_clone,
+                    &agent_name_clone,
                 )
                 .await
             });
@@ -85,6 +92,7 @@ impl CrawlerCore {
         keywords: Arc<Option<Vec<String>>>,
         counter: Arc<AtomicUsize>,
         active_tasks: Arc<AtomicUsize>,
+        agent_name: &str,
     ) -> Result<(), CrawlerError> {
         loop {
             let mut rx_guard = rx.lock().await;
@@ -93,7 +101,7 @@ impl CrawlerCore {
                 None => break,
             };
             drop(rx_guard);
-            match Self::process_single_url(&url, &db, &keywords, &counter).await {
+            match Self::process_single_url(&url, &db, &keywords, &counter, agent_name).await {
                 Ok(outbound_links) => {
                     for next_url in outbound_links {
                         active_tasks.fetch_add(1, Ordering::SeqCst);
@@ -116,10 +124,11 @@ impl CrawlerCore {
         db: &CrawlerDB,
         keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
+        agent_name: &str,
     ) -> Result<Vec<Url>, CrawlerError> {
-        match db.is_url_allowed(url, AGENT_NAME).await? {
+        match db.is_url_allowed(url, agent_name).await? {
             UrlAccess::UnknownDomain => {
-                Self::handle_unknown_domain(url, db, keywords, counter).await
+                Self::handle_unknown_domain(url, db, keywords, counter, agent_name).await
             }
             UrlAccess::Allowed => Self::handle_allowed_domain(url, db, keywords, counter).await,
             UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
@@ -131,15 +140,16 @@ impl CrawlerCore {
         db: &CrawlerDB,
         keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
+        agent_name: &str,
     ) -> Result<Vec<Url>, CrawlerError> {
         let mut link_fetcher = LinkFetcher::new(url.clone(), 0.0);
 
-        let dom_data = link_fetcher.get_domain_data(AGENT_NAME).await?;
+        let dom_data = link_fetcher.get_domain_data(agent_name).await?;
         let delay = dom_data.delay;
 
         db.save_domain(dom_data).await?;
 
-        match db.is_url_allowed(url, AGENT_NAME).await? {
+        match db.is_url_allowed(url, agent_name).await? {
             UrlAccess::Allowed => {
                 link_fetcher.delay = delay;
                 Self::download_and_parse_page(link_fetcher, db, keywords, counter).await
@@ -173,13 +183,11 @@ impl CrawlerCore {
 
         let raw_html_data = link_fetcher.get_page_data().await?;
 
-        let parsed_page = match ParsedPage::parse(raw_html_data, Arc::clone(keywords)) {
-            Some(page) => page,
-            None => return Ok(vec![]),
-        };
+        let parsed_page = ParsedPage::parse(raw_html_data, Arc::clone(keywords));
 
-        Self::save_results_to_db(&url_copy, &parsed_page, db, counter).await?;
-
+        if parsed_page.keywords_in_it {
+            Self::save_results_to_db(&url_copy, &parsed_page, db, counter).await?;
+        }
         Ok(parsed_page.outbound_links)
     }
 

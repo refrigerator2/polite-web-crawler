@@ -10,24 +10,25 @@ pub struct ParsedPage {
     pub outbound_links: Vec<Url>,
     pub keywords: Arc<Option<Vec<String>>>,
     pub url: Url,
+    pub keywords_in_it: bool,
 }
 impl ParsedPage {
-    pub fn parse(
-        data: NotParsedPageData,
-        keywords: Arc<Option<Vec<String>>>,
-    ) -> Option<ParsedPage> {
+    pub fn parse(data: NotParsedPageData, keywords: Arc<Option<Vec<String>>>) -> ParsedPage {
         let mut parsed_page = Self::init(&data, keywords);
 
         let doc = Html::parse_document(&data.content);
 
         parsed_page.set_clean_text(&doc);
         if !parsed_page.is_keywords_in_html() {
-            return None;
+            parsed_page.set_outbound_urls(&doc);
+            parsed_page.clean_text = None;
+            return parsed_page;
         }
         parsed_page.set_outbound_urls(&doc);
         parsed_page.set_description(&doc);
         parsed_page.set_title(&doc);
-        Some(parsed_page)
+        parsed_page.keywords_in_it = true;
+        parsed_page
     }
     fn init(data: &NotParsedPageData, keywords: Arc<Option<Vec<String>>>) -> ParsedPage {
         ParsedPage {
@@ -37,6 +38,7 @@ impl ParsedPage {
             outbound_links: vec![],
             keywords,
             url: data.url.clone(),
+            keywords_in_it: false,
         }
     }
     fn set_outbound_urls(&mut self, doc: &Html) {
@@ -186,7 +188,7 @@ mod tests {
         "#;
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default()).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title.as_deref(), Some("Hello, World! — My Website"));
         assert_eq!(
@@ -208,7 +210,7 @@ mod tests {
         let html = "<body><p>Just text</p></body>";
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default()).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title, None);
         assert_eq!(parsed.description, None);
@@ -229,7 +231,7 @@ mod tests {
         "##;
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default()).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
         let urls = parsed.outbound_links;
 
         let expected_absolute = Url::parse("https://google.com/search?q=rust").unwrap();
@@ -248,7 +250,7 @@ mod tests {
         let html = "<title>Broken HTML<div>Hello! <a href='https://broken.com'>Link</p>";
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default()).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title.as_deref(), Some("Broken HTML"));
         assert_eq!(parsed.clean_text.as_deref(), Some("Broken HTML"));

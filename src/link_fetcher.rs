@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use crate::crawler_error::CrawlerError;
-use texting_robots::Robot;
 use url::Url;
 
 const ATTEMTS: usize = 3;

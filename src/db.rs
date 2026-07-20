@@ -260,8 +260,7 @@ mod tests {
                 url: Url::parse("https://www.ronaldo.com").unwrap(),
             },
             Arc::default(),
-        )
-        .unwrap();
+        );
 
         let res = db.save_parsed_page(1, &page).await;
         assert!(res.is_ok());
