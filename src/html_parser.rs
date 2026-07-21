@@ -1,5 +1,6 @@
 use crate::link_fetcher::NotParsedPageData;
 use scraper::{Html, Selector};
+use std::sync::Arc;
 use url::{ParseError, Url};
 
 pub struct ParsedPage {
@@ -7,25 +8,29 @@ pub struct ParsedPage {
     pub description: Option<String>,
     pub clean_text: Option<String>,
     pub outbound_links: Vec<Url>,
-    pub keywords: Option<Vec<String>>,
+    pub keywords: Arc<Option<Vec<String>>>,
     pub url: Url,
+    pub keywords_in_it: bool,
 }
 impl ParsedPage {
-    pub fn parse(data: NotParsedPageData, keywords: Option<Vec<String>>) -> Option<ParsedPage> {
+    pub fn parse(data: NotParsedPageData, keywords: Arc<Option<Vec<String>>>) -> ParsedPage {
         let mut parsed_page = Self::init(&data, keywords);
 
         let doc = Html::parse_document(&data.content);
 
         parsed_page.set_clean_text(&doc);
         if !parsed_page.is_keywords_in_html() {
-            return None;
+            parsed_page.set_outbound_urls(&doc);
+            parsed_page.clean_text = None;
+            return parsed_page;
         }
         parsed_page.set_outbound_urls(&doc);
         parsed_page.set_description(&doc);
         parsed_page.set_title(&doc);
-        Some(parsed_page)
+        parsed_page.keywords_in_it = true;
+        parsed_page
     }
-    fn init(data: &NotParsedPageData, keywords: Option<Vec<String>>) -> ParsedPage {
+    fn init(data: &NotParsedPageData, keywords: Arc<Option<Vec<String>>>) -> ParsedPage {
         ParsedPage {
             title: None,
             description: None,
@@ -33,6 +38,7 @@ impl ParsedPage {
             outbound_links: vec![],
             keywords,
             url: data.url.clone(),
+            keywords_in_it: false,
         }
     }
     fn set_outbound_urls(&mut self, doc: &Html) {
@@ -90,16 +96,22 @@ impl ParsedPage {
             .filter(|title| !title.is_empty());
     }
     fn is_keywords_in_html(&self) -> bool {
-        if self.keywords.is_none() {
-            return true;
-        } else if self.clean_text.is_none() {
-            return false;
-        }
-        for key in self.keywords.clone().unwrap() {
-            if !self.clean_text.as_deref().unwrap().contains(&key) {
+        let keywords = match self.keywords.as_deref() {
+            Some(keys) => keys,
+            None => return true,
+        };
+
+        let text = match self.clean_text.as_deref() {
+            Some(t) => t,
+            None => return false,
+        };
+
+        for key in keywords {
+            if !text.contains(key) {
                 return false;
             }
         }
+
         true
     }
     fn set_clean_text(&mut self, doc: &Html) {
@@ -176,7 +188,7 @@ mod tests {
         "#;
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, None).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title.as_deref(), Some("Hello, World! — My Website"));
         assert_eq!(
@@ -198,7 +210,7 @@ mod tests {
         let html = "<body><p>Just text</p></body>";
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, None).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title, None);
         assert_eq!(parsed.description, None);
@@ -219,7 +231,7 @@ mod tests {
         "##;
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, None).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
         let urls = parsed.outbound_links;
 
         let expected_absolute = Url::parse("https://google.com/search?q=rust").unwrap();
@@ -238,7 +250,7 @@ mod tests {
         let html = "<title>Broken HTML<div>Hello! <a href='https://broken.com'>Link</p>";
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, None).expect("Parsing failed");
+        let parsed = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title.as_deref(), Some("Broken HTML"));
         assert_eq!(parsed.clean_text.as_deref(), Some("Broken HTML"));

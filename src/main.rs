@@ -1,12 +1,12 @@
 use clap::Parser;
+use crawler::crawler_core::CrawlerCore;
 use crawler::crawler_error::CrawlerError;
-use crawler::link_fetcher::LinkFetcher;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use std::sync::Arc;
 use url::Url;
 
-const TUSKS_BUF_SIZE: usize = 1000;
-const TOKIO_WORKERS: u8 = 8;
+const TOKIO_WORKERS: usize = 128;
+const DEFAULT_DB_NAME: &str = "crawler";
+const DEFAULT_AGENT_NAME: &str = "Aah";
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -14,6 +14,12 @@ pub struct Args {
     pub url: Url,
     #[arg(short, long, num_args = 1..)]
     pub keywords: Option<Vec<String>>,
+    #[arg(short, long)]
+    pub db_name: Option<String>,
+    #[arg(short, long)]
+    pub tokio_workers: Option<usize>,
+    #[arg(short, long)]
+    pub agent_name: Option<String>,
 }
 
 fn parse_url(url: &str) -> Result<Url, String> {
@@ -21,37 +27,15 @@ fn parse_url(url: &str) -> Result<Url, String> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), CrawlerError> {
     let args = Args::parse();
     let url = args.url;
-    let keywords = args.keywords;
-
-    let (tx, rx) = mpsc::channel::<Url>(TUSKS_BUF_SIZE);
-
-    let rx = Arc::new(tokio::sync::Mutex::new(rx));
-
-    tx.send(url).await.unwrap();
-
-    let mut workers = vec![];
-    for _ in 0..TOKIO_WORKERS {
-        let rx_clone = Arc::clone(&rx);
-        let tx_clone = tx.clone();
-
-        let handle = tokio::spawn(async move {
-            loop {
-                let mut rx_guard = rx_clone.lock().await;
-
-                if let Some(u) = rx_guard.recv().await {
-                    drop(rx_guard);
-                    //parsing
-                } else {
-                    break;
-                }
-            }
-        });
-        workers.push(handle);
-    }
-    for worker in workers {
-        let _ = worker.await;
-    }
+    let keywords = Arc::new(args.keywords);
+    let db_name = args.db_name.unwrap_or(DEFAULT_DB_NAME.to_string());
+    let db_name = format!("sqlite://{}.db/", db_name);
+    let tw = args.tokio_workers.unwrap_or(TOKIO_WORKERS);
+    let an = args.agent_name.unwrap_or(DEFAULT_AGENT_NAME.to_string());
+    let core = CrawlerCore::new(keywords, db_name, tw, an).await?;
+    core.run(url).await?;
+    Ok(())
 }

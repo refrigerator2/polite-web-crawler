@@ -1,0 +1,233 @@
+use crate::{
+    crawler_error::CrawlerError,
+    db::{CrawlerDB, UrlAccess},
+    html_parser::ParsedPage,
+    link_fetcher::LinkFetcher,
+};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use tokio::sync::{RwLock, mpsc};
+use url::Url;
+
+pub struct CrawlerCore {
+    keywords: Arc<Option<Vec<String>>>,
+    db: CrawlerDB,
+    tokio_workers: usize,
+    agent_name: String,
+    pages_crawled: Arc<AtomicUsize>,
+    active_tasks: Arc<AtomicUsize>,
+    seen_urls: Arc<RwLock<HashSet<Url>>>,
+}
+
+impl CrawlerCore {
+    pub async fn new(
+        keywords: Arc<Option<Vec<String>>>,
+        db_name: String,
+        tokio_workers: usize,
+        agent_name: String,
+    ) -> Result<CrawlerCore, CrawlerError> {
+        Ok(CrawlerCore {
+            keywords,
+            db: CrawlerDB::new(&db_name).await?,
+            tokio_workers,
+            agent_name,
+            pages_crawled: Arc::new(AtomicUsize::new(0)),
+            active_tasks: Arc::new(AtomicUsize::new(0)),
+            seen_urls: Arc::new(RwLock::new(HashSet::new())),
+        })
+    }
+
+    pub async fn run(&self, start_url: Url) -> Result<(), CrawlerError> {
+        let (tx, rx) = mpsc::channel::<Url>(self.tokio_workers * 500);
+        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+
+        tx.send(start_url.clone()).await.unwrap();
+        self.active_tasks.store(1, Ordering::SeqCst);
+        self.pages_crawled.store(0, Ordering::SeqCst);
+        self.seen_urls.write().await.insert(start_url);
+
+        let mut workers = vec![];
+
+        for _ in 0..self.tokio_workers {
+            let rx_clone = Arc::clone(&rx);
+            let tx_clone = tx.clone();
+            let db_clone = self.db.clone();
+            let keywords_clone = Arc::clone(&self.keywords);
+            let counter_clone = Arc::clone(&self.pages_crawled);
+            let active_tasks_clone = Arc::clone(&self.active_tasks);
+            let seen_pages_clone = Arc::clone(&self.seen_urls);
+
+            let agent_name_clone = self.agent_name.clone();
+            let handle = tokio::spawn(async move {
+                Self::worker_loop(
+                    rx_clone,
+                    tx_clone,
+                    db_clone,
+                    keywords_clone,
+                    counter_clone,
+                    active_tasks_clone,
+                    &agent_name_clone,
+                    seen_pages_clone,
+                )
+                .await
+            });
+            workers.push(handle);
+        }
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if self.active_tasks.load(Ordering::SeqCst) == 0 {
+                println!(
+                    "Ended crawling, urls processed: {}",
+                    self.pages_crawled.load(Ordering::SeqCst)
+                );
+                break;
+            }
+        }
+        for worker in workers {
+            worker.abort();
+        }
+        Ok(())
+    }
+
+    async fn worker_loop(
+        rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Url>>>,
+        tx: mpsc::Sender<Url>,
+        db: CrawlerDB,
+        keywords: Arc<Option<Vec<String>>>,
+        counter: Arc<AtomicUsize>,
+        active_tasks: Arc<AtomicUsize>,
+        agent_name: &str,
+        seen_urls: Arc<RwLock<HashSet<Url>>>,
+    ) -> Result<(), CrawlerError> {
+        loop {
+            let mut rx_guard = rx.lock().await;
+            let url = match rx_guard.recv().await {
+                Some(u) => u,
+                None => break,
+            };
+            drop(rx_guard);
+            match Self::process_single_url(&url, &db, &keywords, &counter, agent_name).await {
+                Ok(mut outbound_links) => {
+                    outbound_links.sort();
+                    outbound_links.dedup();
+                    let mut filtered_urls = Vec::new();
+                    for url in outbound_links {
+                        if seen_urls.read().await.contains(&url) {
+                            continue;
+                        }
+                        if let Ok(res) = db.check_if_url_has_already_been_parsed(url.as_str()).await
+                            && !res
+                        {
+                            filtered_urls.push(url.clone());
+                            seen_urls.write().await.insert(url);
+                        }
+                    }
+                    for next_url in filtered_urls {
+                        active_tasks.fetch_add(1, Ordering::SeqCst);
+                        if tx.try_send(next_url).is_err() {
+                            active_tasks.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error while parsing {}: {:?}", url, e);
+                }
+            }
+            active_tasks.fetch_sub(1, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    async fn process_single_url(
+        url: &Url,
+        db: &CrawlerDB,
+        keywords: &Arc<Option<Vec<String>>>,
+        counter: &Arc<AtomicUsize>,
+        agent_name: &str,
+    ) -> Result<Vec<Url>, CrawlerError> {
+        match db.is_url_allowed(url, agent_name).await? {
+            UrlAccess::UnknownDomain => {
+                Self::handle_unknown_domain(url, db, keywords, counter, agent_name).await
+            }
+            UrlAccess::Allowed => Self::handle_allowed_domain(url, db, keywords, counter).await,
+            UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
+            UrlAccess::URLWithoutHost => Err(CrawlerError::UrlDoesntContainDomain()),
+        }
+    }
+    async fn handle_unknown_domain(
+        url: &Url,
+        db: &CrawlerDB,
+        keywords: &Arc<Option<Vec<String>>>,
+        counter: &Arc<AtomicUsize>,
+        agent_name: &str,
+    ) -> Result<Vec<Url>, CrawlerError> {
+        let mut link_fetcher = LinkFetcher::new(url.clone(), 0.0);
+
+        let dom_data = link_fetcher.get_domain_data(agent_name).await?;
+        let delay = dom_data.delay;
+
+        db.save_domain(&dom_data).await?;
+
+        match db.is_url_allowed(url, agent_name).await? {
+            UrlAccess::Allowed => {
+                link_fetcher.delay = delay;
+                Self::download_and_parse_page(link_fetcher, db, keywords, counter).await
+            }
+            UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
+            _ => Err(CrawlerError::UrlDoesntContainDomain()),
+        }
+    }
+
+    async fn handle_allowed_domain(
+        url: &Url,
+        db: &CrawlerDB,
+        keywords: &Arc<Option<Vec<String>>>,
+        counter: &Arc<AtomicUsize>,
+    ) -> Result<Vec<Url>, CrawlerError> {
+        let host = url.domain().ok_or(CrawlerError::UrlDoesntContainDomain())?;
+
+        let delay = db.get_delay(host).await?.unwrap_or(0.0);
+
+        let link_fetcher = LinkFetcher::new(url.clone(), delay);
+        Self::download_and_parse_page(link_fetcher, db, keywords, counter).await
+    }
+
+    async fn download_and_parse_page(
+        link_fetcher: LinkFetcher,
+        db: &CrawlerDB,
+        keywords: &Arc<Option<Vec<String>>>,
+        counter: &Arc<AtomicUsize>,
+    ) -> Result<Vec<Url>, CrawlerError> {
+        let url_copy = link_fetcher.url.clone();
+
+        let raw_html_data = link_fetcher.get_page_data().await?;
+
+        let parsed_page = ParsedPage::parse(raw_html_data, Arc::clone(keywords));
+
+        if parsed_page.keywords_in_it {
+            Self::save_results_to_db(&url_copy, &parsed_page, db, counter).await?;
+        }
+        Ok(parsed_page.outbound_links)
+    }
+
+    async fn save_results_to_db(
+        url: &Url,
+        parsed_page: &ParsedPage,
+        db: &CrawlerDB,
+        counter: &Arc<AtomicUsize>,
+    ) -> Result<(), CrawlerError> {
+        let host = url.domain().ok_or(CrawlerError::UrlDoesntContainDomain())?;
+        let dom_id = db.get_domain_id_by_domain_name(host).await?.unwrap();
+
+        db.save_parsed_page(dom_id, parsed_page).await?;
+
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}

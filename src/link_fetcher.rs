@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use crate::crawler_error::CrawlerError;
-use texting_robots::Robot;
 use url::Url;
+
+const ATTEMTS: usize = 3;
 
 pub struct NotParsedPageData {
     pub url: Url,
@@ -16,12 +17,14 @@ pub struct DomainData {
 }
 pub struct LinkFetcher {
     pub url: Url,
+    pub delay: f32,
     client: reqwest::Client,
 }
 impl LinkFetcher {
-    pub fn new(u: Url) -> LinkFetcher {
+    pub fn new(u: Url, delay: f32) -> LinkFetcher {
         LinkFetcher {
             url: u,
+            delay,
             client: reqwest::Client::new(),
         }
     }
@@ -47,28 +50,38 @@ impl LinkFetcher {
         }
         let main_link = main_link.unwrap();
         let robot_url = Url::join(&main_link, "robots.txt")?;
-        let response = self.client.get(robot_url).send().await?;
-        if response.status().is_success() {
-            let body = response.text().await?;
-            Ok(Some(body))
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(None)
-        } else {
-            let status_err = response.error_for_status().unwrap_err();
-            Err(CrawlerError::Network(status_err))
+        let mut backoff = Duration::from_secs(1);
+        for i in 0..ATTEMTS {
+            let response = self.client.get(robot_url.clone()).send().await?;
+            if response.status().is_success() {
+                let body = response.text().await?;
+                return Ok(Some(body));
+            } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            } else if i == ATTEMTS - 1 {
+                let status_err = response.error_for_status().unwrap_err();
+                return Err(CrawlerError::Network(status_err));
+            }
+            tokio::time::sleep(backoff).await;
+            backoff *= 2;
         }
+        Ok(None)
     }
     async fn get_page(&self) -> Result<String, CrawlerError> {
-        let response = self.client.get(self.url.clone()).send().await?;
-        if response.status().is_success() {
-            let body = response.text().await?;
-            Ok(body)
-        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(String::new())
-        } else {
-            let status_err = response.error_for_status().unwrap_err();
-            Err(CrawlerError::Network(status_err))
+        for i in 0..ATTEMTS {
+            let response = self.client.get(self.url.clone()).send().await?;
+            if response.status().is_success() {
+                let body = response.text().await?;
+                return Ok(body);
+            } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(String::new());
+            } else if i == ATTEMTS - 1 {
+                let status_err = response.error_for_status().unwrap_err();
+                return Err(CrawlerError::Network(status_err));
+            }
+            tokio::time::sleep(Duration::from_secs_f32(self.delay)).await;
         }
+        Ok(String::new())
     }
     pub async fn get_domain_data(&mut self, user_agent: &str) -> Result<DomainData, CrawlerError> {
         let domain = self.url.clone();
@@ -114,7 +127,7 @@ mod tests {
     #[test]
     fn test_link_fetcher_new() {
         let target_url = Url::parse("https://artixlinux.org").unwrap();
-        let fetcher = LinkFetcher::new(target_url.clone());
+        let fetcher = LinkFetcher::new(target_url.clone(), 0.0);
 
         assert_eq!(fetcher.url, target_url);
     }
@@ -122,7 +135,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_url_success() {
         let url = Url::parse("https://www.google.com").unwrap();
-        let fetcher = LinkFetcher::new(url);
+        let fetcher = LinkFetcher::new(url, 1.0);
 
         let result = fetcher.check_url().await;
         assert!(result.is_ok());
@@ -131,7 +144,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_url_invalid_domain() {
         let url = Url::parse("https://this-domain-definitely-does-not-exist-12345.com").unwrap();
-        let fetcher = LinkFetcher::new(url);
+        let fetcher = LinkFetcher::new(url, 0.0);
 
         let result = fetcher.check_url().await;
         assert!(result.is_err());
@@ -139,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_lifecycle() -> Result<(), CrawlerError> {
         let target_url = Url::parse("https://www.google.com").unwrap();
-        let fetcher = LinkFetcher::new(target_url.clone());
+        let fetcher = LinkFetcher::new(target_url.clone(), 3.0);
 
         let data = fetcher.get_page_data().await?;
 
@@ -150,7 +163,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_domain() -> Result<(), CrawlerError> {
         let target_url = Url::parse("https://www.google.com").unwrap();
-        let mut fetcher = LinkFetcher::new(target_url.clone());
+        let mut fetcher = LinkFetcher::new(target_url.clone(), 2.7);
 
         let data = fetcher.get_domain_data("CrawlerTest").await?;
         assert_eq!(data.domain_string, target_url.domain().unwrap());
