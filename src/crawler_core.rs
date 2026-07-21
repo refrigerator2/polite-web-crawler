@@ -14,8 +14,6 @@ use std::{
 use tokio::sync::mpsc;
 use url::Url;
 
-const MAX_DB_RECONNECTS: usize = 3;
-
 pub struct CrawlerCore {
     keywords: Arc<Option<Vec<String>>>,
     db: CrawlerDB,
@@ -48,6 +46,8 @@ impl CrawlerCore {
 
         tx.send(start_url).await.unwrap();
         self.active_tasks.store(1, Ordering::SeqCst);
+        self.pages_crawled.store(0, Ordering::SeqCst);
+
         let mut workers = vec![];
 
         for _ in 0..self.tokio_workers {
@@ -75,7 +75,10 @@ impl CrawlerCore {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if self.active_tasks.load(Ordering::SeqCst) == 0 {
-                println!("Ended crawling");
+                println!(
+                    "Ended crawling, urls processed: {}",
+                    self.pages_crawled.load(Ordering::SeqCst)
+                );
                 break;
             }
         }
@@ -103,7 +106,15 @@ impl CrawlerCore {
             drop(rx_guard);
             match Self::process_single_url(&url, &db, &keywords, &counter, agent_name).await {
                 Ok(outbound_links) => {
-                    for next_url in outbound_links {
+                    let mut filtered_urls = Vec::new();
+                    for url in outbound_links {
+                        if let Ok(res) = db.check_if_url_has_already_been_parsed(url.as_str()).await
+                            && !res
+                        {
+                            filtered_urls.push(url);
+                        }
+                    }
+                    for next_url in filtered_urls {
                         active_tasks.fetch_add(1, Ordering::SeqCst);
                         if tx.try_send(next_url).is_err() {
                             active_tasks.fetch_sub(1, Ordering::SeqCst);
@@ -115,6 +126,7 @@ impl CrawlerCore {
                 }
             }
             active_tasks.fetch_sub(1, Ordering::SeqCst);
+            counter.fetch_add(1, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -147,7 +159,7 @@ impl CrawlerCore {
         let dom_data = link_fetcher.get_domain_data(agent_name).await?;
         let delay = dom_data.delay;
 
-        db.save_domain(dom_data).await?;
+        db.save_domain(&dom_data).await?;
 
         match db.is_url_allowed(url, agent_name).await? {
             UrlAccess::Allowed => {
