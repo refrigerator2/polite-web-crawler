@@ -12,7 +12,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use url::Url;
 
 pub struct CrawlerCore {
@@ -96,7 +96,7 @@ impl CrawlerCore {
     }
 
     async fn worker_loop(
-        rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Url>>>,
+        rx: Arc<Mutex<mpsc::Receiver<Url>>>,
         tx: mpsc::Sender<Url>,
         db: CrawlerDB,
         keywords: Arc<Option<Vec<String>>>,
