@@ -1,6 +1,7 @@
 use crate::{
     crawler_error::CrawlerError,
     db::{CrawlerDB, UrlAccess},
+    domain_rate_limiter::DomainRateLimiter,
     html_parser::ParsedPage,
     link_fetcher::LinkFetcher,
 };
@@ -68,7 +69,7 @@ impl CrawlerCore {
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
             let seen_pages_clone = Arc::clone(&self.seen_urls);
-
+            let drl = DomainRateLimiter::new(Duration::from_secs(1));
             let agent_name_clone = self.agent_name.clone();
             let handle = tokio::spawn(async move {
                 Self::worker_loop(
@@ -80,6 +81,7 @@ impl CrawlerCore {
                     active_tasks_clone,
                     &agent_name_clone,
                     seen_pages_clone,
+                    drl.clone(),
                 )
                 .await
             });
@@ -110,6 +112,7 @@ impl CrawlerCore {
         active_tasks: Arc<AtomicUsize>,
         agent_name: &str,
         seen_urls: Arc<RwLock<HashSet<Url>>>,
+        drl: DomainRateLimiter,
     ) -> Result<(), CrawlerError> {
         loop {
             let mut rx_guard = rx.lock().await;
@@ -118,8 +121,26 @@ impl CrawlerCore {
                 None => break,
             };
             drop(rx_guard);
+            let domain = match url.domain() {
+                Some(d) => d.to_string(),
+                None => {
+                    println!("Tried to acquire url without domain: {}", url);
+                    active_tasks.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+            };
+
+            if !drl.try_acquire(&domain) {
+                if tx.try_send(url).is_err() {
+                    eprintln!("Failed to re-queue URL: channel full or closed");
+                    active_tasks.fetch_sub(1, Ordering::SeqCst);
+                }
+                continue;
+            }
             let _task_guard = TaskGuard(Arc::clone(&active_tasks));
-            match Self::process_single_url(&url, &db, &keywords, &counter, agent_name).await {
+            match Self::process_single_url(&url, &db, &keywords, &counter, agent_name, drl.clone())
+                .await
+            {
                 Ok(mut outbound_links) => {
                     outbound_links.sort();
                     outbound_links.dedup();
@@ -142,6 +163,7 @@ impl CrawlerCore {
                     for next_url in filtered_urls {
                         active_tasks.fetch_add(1, Ordering::SeqCst);
                         if tx.try_send(next_url).is_err() {
+                            eprintln!("buffer overflow");
                             active_tasks.fetch_sub(1, Ordering::SeqCst);
                         }
                     }
@@ -150,7 +172,7 @@ impl CrawlerCore {
                     eprintln!("Error while parsing {}: {:?}", url, e);
                 }
             }
-            active_tasks.fetch_sub(1, Ordering::SeqCst);
+            println!("active_tasks: {}", active_tasks.load(Ordering::SeqCst));
         }
         Ok(())
     }
@@ -161,10 +183,11 @@ impl CrawlerCore {
         keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
         agent_name: &str,
+        drl: DomainRateLimiter,
     ) -> Result<Vec<Url>, CrawlerError> {
         match db.is_url_allowed(url, agent_name).await? {
             UrlAccess::UnknownDomain => {
-                Self::handle_unknown_domain(url, db, keywords, counter, agent_name).await
+                Self::handle_unknown_domain(url, db, keywords, counter, agent_name, drl).await
             }
             UrlAccess::Allowed => Self::handle_allowed_domain(url, db, keywords, counter).await,
             UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
@@ -177,17 +200,21 @@ impl CrawlerCore {
         keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
         agent_name: &str,
+        drl: DomainRateLimiter,
     ) -> Result<Vec<Url>, CrawlerError> {
         let mut link_fetcher = LinkFetcher::new(url.clone(), 0.0);
 
         let dom_data = link_fetcher.get_domain_data(agent_name).await?;
         let delay = dom_data.delay;
-
+        drl.update_delay(&dom_data.domain_string, Duration::from_secs_f32(delay));
         db.save_domain(&dom_data).await?;
 
         match db.is_url_allowed(url, agent_name).await? {
             UrlAccess::Allowed => {
                 link_fetcher.delay = delay;
+                while !drl.try_acquire(&dom_data.domain_string) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
                 Self::download_and_parse_page(link_fetcher, db, keywords, counter).await
             }
             UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
