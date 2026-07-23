@@ -15,6 +15,12 @@ use std::{
 use tokio::sync::{Mutex, RwLock, mpsc};
 use url::Url;
 
+pub struct TaskGuard(Arc<AtomicUsize>);
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        &self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 pub struct CrawlerCore {
     keywords: Arc<Option<Vec<String>>>,
     db: CrawlerDB,
@@ -112,20 +118,25 @@ impl CrawlerCore {
                 None => break,
             };
             drop(rx_guard);
+            let _task_guard = TaskGuard(Arc::clone(&active_tasks));
             match Self::process_single_url(&url, &db, &keywords, &counter, agent_name).await {
                 Ok(mut outbound_links) => {
                     outbound_links.sort();
                     outbound_links.dedup();
-                    let mut filtered_urls = Vec::new();
+                    let mut filtered_urls_by_seen = Vec::new();
+                    let mut seen_guard = seen_urls.write().await;
                     for url in outbound_links {
-                        if seen_urls.read().await.contains(&url) {
-                            continue;
+                        if seen_guard.insert(url.clone()) {
+                            filtered_urls_by_seen.push(url);
                         }
-                        if let Ok(res) = db.check_if_url_has_already_been_parsed(url.as_str()).await
-                            && !res
+                    }
+                    drop(seen_guard);
+                    let mut filtered_urls = Vec::new();
+                    for url in filtered_urls_by_seen {
+                        if let Ok(false) =
+                            db.check_if_url_has_already_been_parsed(url.as_str()).await
                         {
-                            filtered_urls.push(url.clone());
-                            seen_urls.write().await.insert(url);
+                            filtered_urls.push(url);
                         }
                     }
                     for next_url in filtered_urls {
