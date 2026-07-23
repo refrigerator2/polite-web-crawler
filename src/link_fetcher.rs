@@ -3,7 +3,8 @@ use std::time::Duration;
 use crate::crawler_error::CrawlerError;
 use url::Url;
 
-const ATTEMTS: usize = 3;
+const ATTEMTS: i32 = 3;
+const DURATION: u64 = 1;
 
 pub struct NotParsedPageData {
     pub url: Url,
@@ -50,38 +51,50 @@ impl LinkFetcher {
         }
         let main_link = main_link.unwrap();
         let robot_url = Url::join(&main_link, "robots.txt")?;
-        let mut backoff = Duration::from_secs(1);
-        for i in 0..ATTEMTS {
-            let response = self.client.get(robot_url.clone()).send().await?;
-            if response.status().is_success() {
-                let body = response.text().await?;
-                return Ok(Some(body));
-            } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-                return Ok(None);
-            } else if i == ATTEMTS - 1 {
-                let status_err = response.error_for_status().unwrap_err();
-                return Err(CrawlerError::Network(status_err));
-            }
-            tokio::time::sleep(backoff).await;
-            backoff *= 2;
+        let response = self.client.get(robot_url.clone()).send().await?;
+        if response.status().is_success() {
+            let body = response.text().await?;
+            Ok(Some(body))
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            let status_err = response.error_for_status().unwrap_err();
+            Err(CrawlerError::Network(status_err))
         }
-        Ok(None)
+    }
+    async fn with_retry<F, Fut, T>(
+        attemts: i32,
+        delay: Duration,
+        mut operation: F,
+    ) -> Result<T, CrawlerError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, CrawlerError>>,
+    {
+        for i in 1..=attemts {
+            match operation().await {
+                Ok(res) => return Ok(res),
+                Err(e) => {
+                    if i == attemts {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+        unreachable!("Unreach try_reconnect")
     }
     async fn get_page(&self) -> Result<String, CrawlerError> {
-        for i in 0..ATTEMTS {
-            let response = self.client.get(self.url.clone()).send().await?;
-            if response.status().is_success() {
-                let body = response.text().await?;
-                return Ok(body);
-            } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-                return Ok(String::new());
-            } else if i == ATTEMTS - 1 {
-                let status_err = response.error_for_status().unwrap_err();
-                return Err(CrawlerError::Network(status_err));
-            }
-            tokio::time::sleep(Duration::from_secs_f32(self.delay)).await;
+        let response = self.client.get(self.url.clone()).send().await?;
+        if response.status().is_success() {
+            let body = response.text().await?;
+            Ok(body)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(String::new())
+        } else {
+            let status_err = response.error_for_status().unwrap_err();
+            Err(CrawlerError::Network(status_err))
         }
-        Ok(String::new())
     }
     pub async fn get_domain_data(&mut self, user_agent: &str) -> Result<DomainData, CrawlerError> {
         let domain = self.url.clone();
@@ -97,7 +110,11 @@ impl LinkFetcher {
         self.url = root_url;
         self.check_url().await?;
 
-        let robot_body = self.get_robot_list().await?;
+        let robot_body = Self::with_retry(ATTEMTS, Duration::from_secs(DURATION), || async {
+            self.get_robot_list().await
+        })
+        .await?;
+
         self.url = temp;
         let robots_str = robot_body.as_deref().unwrap_or("");
         let robot_matcher = texting_robots::Robot::new(user_agent, robots_str.as_bytes())?;
@@ -113,7 +130,10 @@ impl LinkFetcher {
     pub async fn get_page_data(self) -> Result<NotParsedPageData, CrawlerError> {
         self.check_url().await?;
 
-        let page = self.get_page().await?;
+        let page = Self::with_retry(ATTEMTS, Duration::from_secs(DURATION), || async {
+            self.get_page().await
+        })
+        .await?;
 
         let LinkFetcher { url, .. } = self;
         Ok(NotParsedPageData { url, content: page })
