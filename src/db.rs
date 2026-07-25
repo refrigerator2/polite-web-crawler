@@ -103,20 +103,24 @@ impl CrawlerDB {
         Ok(())
     }
 
-    pub async fn save_domain(&self, domain_data: &DomainData) -> Result<(), CrawlerError> {
+    pub async fn save_domain(&self, domain_data: &DomainData) -> Result<i64, CrawlerError> {
         let mut backoff = Duration::from_secs(1);
         for i in 0..MAX_DB_RECONNECTS {
-            let res = sqlx::query(
-                "INSERT OR REPLACE INTO domains (domain_string, delay, allowed_urls) 
-         VALUES (?, ?, ?)",
+            let res: Result<i64, sqlx::Error> = sqlx::query_scalar(
+                "INSERT INTO domains (domain_string, delay, allowed_urls) 
+             VALUES (?, ?, ?)
+             ON CONFLICT(domain_string) DO UPDATE SET 
+                delay = excluded.delay,
+                allowed_urls = excluded.allowed_urls
+             RETURNING dom_id",
             )
             .bind(&domain_data.domain_string)
             .bind(domain_data.delay)
             .bind(&domain_data.robots)
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
             .await;
             match res {
-                Ok(_) => return Ok(()),
+                Ok(domain_id) => return Ok(domain_id),
                 Err(e) => {
                     if i == MAX_DB_RECONNECTS {
                         return Err(CrawlerError::DbError(e));
@@ -128,7 +132,7 @@ impl CrawlerDB {
             }
         }
 
-        Ok(())
+        unreachable!("Unreach in save_domain");
     }
 
     pub async fn is_url_allowed(
