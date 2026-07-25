@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CachedData {
+struct CachedData {
     pub id: i64,
     pub robot: Arc<String>,
 }

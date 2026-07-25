@@ -1,10 +1,10 @@
 use crate::{
     crawler_error::CrawlerError,
-    db::{CrawlerDB, UrlAccess},
-    domain_cache::{self, DomainCache},
     domain_rate_limiter::DomainRateLimiter,
     html_parser::ParsedPage,
     link_fetcher::LinkFetcher,
+    storage::db::{CrawlerDB, UrlAccess},
+    storage::{db, domain_cache::DomainCache},
 };
 use fastbloom::BloomFilter;
 use std::{
