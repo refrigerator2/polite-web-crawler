@@ -5,16 +5,15 @@ use crate::{
     html_parser::ParsedPage,
     link_fetcher::LinkFetcher,
 };
-use fastbloom::AtomicBloomFilter;
+use fastbloom::BloomFilter;
 use std::{
-    collections::HashSet,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::mpsc;
 use url::Url;
 const EXPECTED_NUM_OF_URLS: usize = 10_000_000;
 
@@ -53,12 +52,15 @@ impl CrawlerCore {
     pub async fn run(&self, start_url: Url) -> Result<(), CrawlerError> {
         let (tx, rx) = mpsc::channel::<Url>(self.tokio_workers * 500);
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
-        let seen_urls =
-            AtomicBloomFilter::with_false_pos(0.001).expected_items(EXPECTED_NUM_OF_URLS);
+        let seen_urls = Arc::new(Mutex::new(
+            BloomFilter::with_false_pos(0.001).expected_items(EXPECTED_NUM_OF_URLS),
+        ));
         tx.send(start_url.clone()).await.unwrap();
         self.active_tasks.store(1, Ordering::SeqCst);
         self.pages_crawled.store(0, Ordering::SeqCst);
-        seen_urls.insert(&start_url);
+        let mut guard = seen_urls.lock().unwrap();
+        guard.insert(&start_url);
+        drop(guard);
 
         let mut workers = vec![];
 
@@ -69,7 +71,7 @@ impl CrawlerCore {
             let keywords_clone = Arc::clone(&self.keywords);
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
-            let seen_urls_clone = seen_urls.clone();
+            let seen_urls_clone = Arc::clone(&seen_urls);
             let drl = DomainRateLimiter::new(Duration::from_secs(1));
             let agent_name_clone = self.agent_name.clone();
             let handle = tokio::spawn(async move {
@@ -105,14 +107,14 @@ impl CrawlerCore {
     }
 
     async fn worker_loop(
-        rx: Arc<Mutex<mpsc::Receiver<Url>>>,
+        rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Url>>>,
         tx: mpsc::Sender<Url>,
         db: CrawlerDB,
         keywords: Arc<Option<Vec<String>>>,
         counter: Arc<AtomicUsize>,
         active_tasks: Arc<AtomicUsize>,
         agent_name: &str,
-        seen_urls: AtomicBloomFilter,
+        seen_urls: Arc<Mutex<BloomFilter>>,
         drl: DomainRateLimiter,
     ) -> Result<(), CrawlerError> {
         loop {
@@ -148,7 +150,8 @@ impl CrawlerCore {
                     let mut filtered_urls_by_seen = Vec::new();
 
                     for url in outbound_links {
-                        if seen_urls.insert(&url) {
+                        let is_in_list = seen_urls.lock().unwrap().insert(&url);
+                        if !is_in_list {
                             filtered_urls_by_seen.push(url);
                         }
                     }
