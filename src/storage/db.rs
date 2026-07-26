@@ -1,11 +1,14 @@
-use crate::{crawler_error::CrawlerError, html_parser::ParsedPage, link_fetcher::DomainData};
+use crate::{
+    crawler_error::CrawlerError, html_parser::ParsedPage, link_fetcher::DomainData,
+    storage::domain_cache::CachedData,
+};
 use sqlx::{
     Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
+use std::str::FromStr;
 use std::sync::Arc;
-use std::{str::FromStr, time::Duration};
-use texting_robots::Robot;
+use std::time::Duration;
 
 const MAX_DB_RECONNECTS: usize = 3;
 
@@ -71,15 +74,15 @@ impl CrawlerDB {
         page: &ParsedPage,
     ) -> Result<(), CrawlerError> {
         let mut backoff = Duration::from_secs(1);
-        for i in 1..=MAX_DB_RECONNECTS {
+        for i in 0..MAX_DB_RECONNECTS {
             let res = sqlx::query(
                 "INSERT INTO pages (dom_id, url, title, clean_text, description) 
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(url) DO UPDATE SET
-            dom_id = excluded.dom_id,
-            title = excluded.title,
-            clean_text = excluded.clean_text,
-            description = excluded.description",
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(url) DO UPDATE SET
+                    dom_id = excluded.dom_id,
+                    title = excluded.title,
+                    clean_text = excluded.clean_text,
+                    description = excluded.description",
             )
             .bind(dom_id)
             .bind(page.url.as_str())
@@ -88,208 +91,113 @@ impl CrawlerDB {
             .bind(page.description.as_deref())
             .execute(&self.pool)
             .await;
+
             match res {
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    if i == MAX_DB_RECONNECTS {
+                    if i == MAX_DB_RECONNECTS - 1 {
                         return Err(CrawlerError::DbError(e));
                     }
-                    eprintln!("attempt {}: Error during saving page: {}", i, e);
+                    eprintln!("attempt {}: Error during saving page: {}", i + 1, e);
                     tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
             }
         }
-        Ok(())
+        Err(CrawlerError::DbError(sqlx::Error::RowNotFound))
     }
 
     pub async fn save_domain(&self, domain_data: &DomainData) -> Result<i64, CrawlerError> {
         let mut backoff = Duration::from_secs(1);
+
+        let robots_str = domain_data.robots.as_deref().map(|s| s.as_str());
+
         for i in 0..MAX_DB_RECONNECTS {
             let res: Result<i64, sqlx::Error> = sqlx::query_scalar(
                 "INSERT INTO domains (domain_string, delay, allowed_urls) 
-             VALUES (?, ?, ?)
-             ON CONFLICT(domain_string) DO UPDATE SET 
-                delay = excluded.delay,
-                allowed_urls = excluded.allowed_urls
-             RETURNING dom_id",
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(domain_string) DO UPDATE SET 
+                    delay = excluded.delay,
+                    allowed_urls = excluded.allowed_urls
+                 RETURNING dom_id",
             )
             .bind(&domain_data.domain_string)
             .bind(domain_data.delay)
-            .bind(&domain_data.robots)
+            .bind(robots_str)
             .fetch_one(&self.pool)
             .await;
+
             match res {
                 Ok(domain_id) => return Ok(domain_id),
                 Err(e) => {
-                    if i == MAX_DB_RECONNECTS {
+                    if i == MAX_DB_RECONNECTS - 1 {
                         return Err(CrawlerError::DbError(e));
                     }
-                    eprintln!("attempt {}: Error during saving domain: {}", i, e);
+                    eprintln!("attempt {}: Error during saving domain: {}", i + 1, e);
                     tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
             }
         }
 
-        unreachable!("Unreach in save_domain");
+        Err(CrawlerError::DbError(sqlx::Error::RowNotFound))
     }
 
-    pub async fn is_url_allowed(
+    pub async fn get_cache_info_about_domain(
         &self,
-        url: &url::Url,
-        user_agent: &str,
-    ) -> Result<UrlAccess, CrawlerError> {
-        let host = match url.host_str() {
-            Some(h) => h,
-            None => return Ok(UrlAccess::URLWithoutHost),
-        };
-        let path = url.path();
-
+        domain: &str,
+    ) -> Result<Option<CachedData>, CrawlerError> {
         let mut backoff = Duration::from_secs(1);
         for i in 0..MAX_DB_RECONNECTS {
-            let res = sqlx::query("SELECT allowed_urls FROM domains WHERE domain_string = ?")
-                .bind(host)
-                .fetch_optional(&self.pool)
-                .await;
+            let res = sqlx::query(
+                "SELECT dom_id, allowed_urls, delay FROM domains WHERE domain_string = ?",
+            )
+            .bind(domain)
+            .fetch_optional(&self.pool)
+            .await;
+
             match res {
                 Ok(record) => {
                     if let Some(row) = record {
-                        if let Some(raw_robots) = row.get::<Option<String>, _>("allowed_urls") {
-                            let robot = Robot::new(user_agent, raw_robots.as_bytes())?;
+                        let id: i64 = row.try_get("dom_id")?;
+                        let allowed_urls: Option<String> = row.try_get("allowed_urls")?;
+                        let delay_f32: f32 = row.try_get("delay")?;
 
-                            if robot.allowed(path) {
-                                return Ok(UrlAccess::Allowed);
-                            } else {
-                                return Ok(UrlAccess::Disallowed);
-                            }
-                        } else {
-                            return Ok(UrlAccess::Allowed);
-                        }
-                    }
-                    return Ok(UrlAccess::UnknownDomain);
-                }
-                Err(e) => {
-                    if i == MAX_DB_RECONNECTS {
-                        return Err(CrawlerError::DbError(e));
-                    }
-                    eprintln!("attempt {}: Error during checking is url allowed: {}", i, e);
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-            }
-        }
-        unreachable!("Unreach in is_url_allowed");
-    }
+                        let cached_data = CachedData {
+                            id,
+                            robot: allowed_urls.map(Arc::new),
+                            delay: Duration::from_secs_f32(delay_f32),
+                        };
 
-    pub async fn get_delay(&self, host: &str) -> Result<Option<f32>, CrawlerError> {
-        let mut backoff = Duration::from_secs(1);
-        for i in 0..MAX_DB_RECONNECTS {
-            let res = sqlx::query("SELECT delay FROM domains WHERE domain_string = ?")
-                .bind(host)
-                .fetch_optional(&self.pool)
-                .await;
-            match res {
-                Ok(record) => {
-                    if let Some(row) = record {
-                        if let Some(delay) = row.get::<Option<f32>, _>("delay") {
-                            return Ok(Some(delay));
-                        }
-                    } else {
-                        return Ok(None);
-                    }
-                }
-                Err(e) => {
-                    if i == MAX_DB_RECONNECTS {
-                        return Err(CrawlerError::DbError(e));
-                    }
-                    eprintln!("attempt {}: Error during checking is url allowed: {}", i, e);
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-            }
-        }
-        unreachable!("Unreach in get_delay");
-    }
-
-    pub async fn check_if_url_has_already_been_parsed(
-        &self,
-        url: &str,
-    ) -> Result<bool, CrawlerError> {
-        let mut backoff = Duration::from_secs(1);
-        for i in 0..MAX_DB_RECONNECTS {
-            let res = sqlx::query("SELECT 1 FROM pages WHERE url = ? LIMIT 1")
-                .bind(url)
-                .fetch_optional(&self.pool)
-                .await;
-
-            match res {
-                Ok(record) => {
-                    if record.is_some() {
-                        return Ok(true);
-                    } else {
-                        return Ok(false);
-                    }
-                }
-                Err(e) => {
-                    if i == MAX_DB_RECONNECTS {
-                        return Err(CrawlerError::DbError(e));
-                    }
-                    eprintln!(
-                        "attempt {}: Error during checking if url has already been parsed: {}",
-                        i, e
-                    );
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-            }
-        }
-        unreachable!("Unreach in check_if_url_has_already_been_parsed");
-    }
-
-    pub async fn get_domain_id_by_domain_name(
-        &self,
-        host: &str,
-    ) -> Result<Option<i64>, CrawlerError> {
-        let mut backoff = Duration::from_secs(1);
-        for i in 0..MAX_DB_RECONNECTS {
-            let res = sqlx::query("SELECT dom_id FROM domains WHERE domain_string = ?")
-                .bind(host)
-                .fetch_optional(&self.pool)
-                .await;
-            match res {
-                Ok(record) => {
-                    if let Some(row) = record {
-                        if let Some(id) = row.get::<Option<i64>, _>("dom_id") {
-                            return Ok(Some(id));
-                        }
+                        return Ok(Some(cached_data));
                     }
                     return Ok(None);
                 }
                 Err(e) => {
-                    if i == MAX_DB_RECONNECTS {
+                    if i == MAX_DB_RECONNECTS - 1 {
                         return Err(CrawlerError::DbError(e));
                     }
                     eprintln!(
-                        "attempt {}: Error during getting domain id by its name: {}",
-                        i, e
+                        "attempt {}: Error during getting domain info by name: {}",
+                        i + 1,
+                        e
                     );
                     tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
             }
         }
-        unreachable!("Unreach in get_domain_id_by_domain_name");
+        Err(CrawlerError::DbError(sqlx::Error::RowNotFound))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::link_fetcher::{DomainData, NotParsedPageData};
+    use crate::link_fetcher::NotParsedPageData;
     use url::Url;
 
-    fn create_domain(domain_string: String, delay: f32, robots: Option<String>) -> DomainData {
+    fn create_domain(domain_string: String, delay: f32, robots: Option<Arc<String>>) -> DomainData {
         DomainData {
             domain_string,
             robots,
@@ -300,146 +208,72 @@ mod tests {
     #[tokio::test]
     async fn test_new_db_fn() {
         let res = CrawlerDB::new("sqlite::memory:").await;
-        assert!(res.is_ok())
+        assert!(res.is_ok());
     }
 
     #[tokio::test]
-    async fn test_inserting_and_getting_domains() {
-        let db = CrawlerDB::new("sqlite::memory:").await;
-        assert!(db.is_ok());
-        let db = db.unwrap();
+    async fn test_inserting_and_getting_domain_cache_info() {
+        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
+
+        let robots_content = Arc::new("User-agent: * Disallow: /admin".to_string());
 
         let dom1 = create_domain(
-            "test1".to_string(),
+            "test1.com".to_string(),
             4.2,
-            Some("https://www.ronaldo.com".to_string()),
+            Some(Arc::clone(&robots_content)),
         );
-        let res = db.save_domain(&dom1).await;
-        assert!(res.is_ok());
+        let id1 = db.save_domain(&dom1).await.unwrap();
 
-        let dom2 = create_domain(
-            "test2".to_string(),
-            5.2,
-            Some("https://www.messi.com".to_string()),
-        );
-        let res = db.save_domain(&dom2).await;
-        assert!(res.is_ok());
+        let dom2 = create_domain("test2.com".to_string(), 5.2, None);
+        let id2 = db.save_domain(&dom2).await.unwrap();
 
-        let dom3 = create_domain(
-            "test3".to_string(),
-            6.7,
-            Some("https://www.other.com".to_string()),
-        );
-        let res = db.save_domain(&dom3).await;
-        assert!(res.is_ok());
+        // Проверяем первый домен
+        let cache_info1 = db
+            .get_cache_info_about_domain("test1.com")
+            .await
+            .unwrap()
+            .unwrap();
 
-        let get_res = db.get_delay("test1").await;
-        assert!(get_res.is_ok());
-        assert_eq!(get_res.unwrap().unwrap(), 4.2);
+        assert_eq!(cache_info1.id, id1);
+        assert_eq!(cache_info1.delay, Duration::from_secs_f32(4.2));
+        assert_eq!(cache_info1.robot, Some(robots_content));
 
-        let get_res = db.get_delay("test2").await;
-        assert!(get_res.is_ok());
-        assert_eq!(get_res.unwrap().unwrap(), 5.2);
+        // Проверяем второй домен без robots
+        let cache_info2 = db
+            .get_cache_info_about_domain("test2.com")
+            .await
+            .unwrap()
+            .unwrap();
 
-        let get_res = db.get_delay("test3").await;
-        assert!(get_res.is_ok());
-        assert_eq!(get_res.unwrap().unwrap(), 6.7)
+        assert_eq!(cache_info2.id, id2);
+        assert_eq!(cache_info2.delay, Duration::from_secs_f32(5.2));
+        assert_eq!(cache_info2.robot, None);
+
+        // Несуществующий домен
+        let not_found = db.get_cache_info_about_domain("unknown.com").await.unwrap();
+        assert_eq!(not_found, None);
     }
 
     #[tokio::test]
-    async fn test_inserting_and_checking_pages() {
-        let db = CrawlerDB::new("sqlite::memory:").await;
-        assert!(db.is_ok());
-        let db = db.unwrap();
+    async fn test_save_parsed_page() {
+        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
 
-        let dom = create_domain("ronaldo.com".to_string(), 1.0, Some("".to_string()));
-        db.save_domain(&dom).await.unwrap();
+        let dom = create_domain(
+            "ronaldo.com".to_string(),
+            1.0,
+            Some(Arc::new("".to_string())),
+        );
+        let dom_id = db.save_domain(&dom).await.unwrap();
 
         let page = ParsedPage::parse(
             NotParsedPageData {
-                content: "smt".to_string(),
+                content: "<h1>CR7</h1>".to_string(),
                 url: Url::parse("https://www.ronaldo.com").unwrap(),
             },
             Arc::default(),
         );
 
-        let res = db.save_parsed_page(1, &page).await;
+        let res = db.save_parsed_page(dom_id, &page).await;
         assert!(res.is_ok());
-
-        let check_res = db
-            .check_if_url_has_already_been_parsed("https://www.ronaldo.com/")
-            .await;
-        assert!(check_res.is_ok());
-        assert_eq!(check_res.unwrap(), true);
-    }
-
-    #[tokio::test]
-    async fn test_is_url_allowed_scenarios() {
-        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
-        let user_agent = "MyBot";
-
-        let unknown_url = Url::parse("https://github.com/trending").unwrap();
-        let access = db.is_url_allowed(&unknown_url, user_agent).await.unwrap();
-        assert_eq!(access, UrlAccess::UnknownDomain);
-
-        let raw_robots = "User-agent: *\nDisallow: /admin/\nAllow: /public/";
-        let dom = create_domain("example.com".to_string(), 1.0, Some(raw_robots.to_string()));
-        db.save_domain(&dom).await.unwrap();
-
-        let allowed_url = Url::parse("https://example.com/public/index.html").unwrap();
-        let access = db.is_url_allowed(&allowed_url, user_agent).await.unwrap();
-        assert_eq!(access, UrlAccess::Allowed);
-
-        let disallowed_url = Url::parse("https://example.com/admin/settings").unwrap();
-        let access = db
-            .is_url_allowed(&disallowed_url, user_agent)
-            .await
-            .unwrap();
-        assert_eq!(access, UrlAccess::Disallowed);
-
-        let no_host_url = Url::parse("data:text/plain,hello").unwrap();
-        let access = db.is_url_allowed(&no_host_url, user_agent).await.unwrap();
-        assert_eq!(access, UrlAccess::URLWithoutHost);
-    }
-
-    #[tokio::test]
-    async fn test_domain_without_robots_txt() {
-        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
-
-        let dom = create_domain("nobots.com".to_string(), 0.0, Some("".to_string()));
-        db.save_domain(&dom).await.unwrap();
-
-        let url = Url::parse("https://nobots.com/any-path").unwrap();
-        let access = db.is_url_allowed(&url, "MyBot").await.unwrap();
-
-        assert_eq!(access, UrlAccess::Allowed);
-    }
-
-    #[tokio::test]
-    async fn test_check_if_url_is_already_parsed_not_found() {
-        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
-
-        let exists = db
-            .check_if_url_has_already_been_parsed("https://notfound.com")
-            .await
-            .unwrap();
-        assert_eq!(exists, false);
-    }
-
-    #[tokio::test]
-    async fn test_get_domain_id() {
-        let db = CrawlerDB::new("sqlite::memory:").await.unwrap();
-
-        let dom = create_domain("nobots.com".to_string(), 0.0, Some("".to_string()));
-        let res = db.save_domain(&dom).await;
-        assert!(res.is_ok());
-
-        let res = db.get_domain_id_by_domain_name("nobots.com").await;
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap().unwrap(), 1);
-
-        let res = db.get_domain_id_by_domain_name("smt.com").await;
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), None);
     }
 }

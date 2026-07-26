@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::crawler_error::CrawlerError;
+use std::sync::Arc;
 use url::Url;
-
 const ATTEMTS: i32 = 3;
 const DURATION: u64 = 1;
 
@@ -13,7 +13,7 @@ pub struct NotParsedPageData {
 #[derive(Debug)]
 pub struct DomainData {
     pub domain_string: String,
-    pub robots: Option<String>,
+    pub robots: Option<Arc<String>>,
     pub delay: f32,
 }
 pub struct LinkFetcher {
@@ -32,14 +32,12 @@ impl LinkFetcher {
     async fn check_url(&self) -> Result<(), CrawlerError> {
         let res = self
             .client
-            .head(self.url.to_string())
+            .head(self.url.as_str())
             .timeout(Duration::from_secs(2))
             .send()
-            .await?;
-        if !res.status().is_success() {
-            let status_error = res.error_for_status().unwrap_err();
-            return Err(CrawlerError::Network(status_error));
-        }
+            .await?
+            .error_for_status()
+            .map_err(CrawlerError::Network)?;
         Ok(())
     }
     async fn get_robot_list(&self) -> Result<Option<String>, CrawlerError> {
@@ -114,18 +112,24 @@ impl LinkFetcher {
             self.get_robot_list().await
         })
         .await?;
+        if let Some(rb) = robot_body {
+            self.url = temp;
+            let robot_matcher = texting_robots::Robot::new(user_agent, rb.as_bytes())?;
 
-        self.url = temp;
-        let robots_str = robot_body.as_deref().unwrap_or("");
-        let robot_matcher = texting_robots::Robot::new(user_agent, robots_str.as_bytes())?;
+            let delay = robot_matcher.delay.unwrap_or(0.0);
 
-        let delay = robot_matcher.delay.unwrap_or(0.0);
-
-        Ok(DomainData {
-            domain_string: domain.to_string(),
-            robots: robot_body,
-            delay,
-        })
+            Ok(DomainData {
+                domain_string: domain.to_string(),
+                robots: Some(Arc::new(rb)),
+                delay,
+            })
+        } else {
+            Ok(DomainData {
+                domain_string: domain.to_string(),
+                robots: None,
+                delay: 0.0,
+            })
+        }
     }
     pub async fn get_page_data(self) -> Result<NotParsedPageData, CrawlerError> {
         self.check_url().await?;

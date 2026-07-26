@@ -4,7 +4,7 @@ use url::Url;
 
 const EXPECTED_NUM_OF_URLS: usize = 10_000_000;
 const EXPECTED_LOSS: f64 = 0.001;
-
+#[derive(Clone)]
 pub struct SeenUrls {
     seen_urls: Arc<Mutex<BloomFilter>>,
 }
