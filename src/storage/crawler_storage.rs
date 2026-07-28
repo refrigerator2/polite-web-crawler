@@ -14,20 +14,25 @@ pub struct CrawlerStorage {
     seen_urls: SeenUrls,
     db: CrawlerDB,
     domainc_cache: DomainCache,
+    pub agent_name: String,
 }
 impl CrawlerStorage {
-    pub async fn new(db_name: &str) -> Result<Self, CrawlerError> {
+    pub async fn new(db_name: &str, user_agent: String) -> Result<Self, CrawlerError> {
         Ok(Self {
             seen_urls: SeenUrls::new(),
             db: CrawlerDB::new(db_name).await?,
             domainc_cache: DomainCache::new(Duration::from_secs(360), 20),
+            agent_name: user_agent,
         })
     }
     pub async fn get_domain_id(&self, domain: &str) -> Result<Option<i64>, CrawlerError> {
         let dom_id = match self.domainc_cache.get_domain_id(domain).await {
             Some(id) => Some(id),
             None => {
-                let temp = self.db.get_cache_info_about_domain(domain).await?;
+                let temp = self
+                    .db
+                    .get_cache_info_about_domain(domain, self.agent_name.as_str())
+                    .await?;
                 if let Some(cd) = temp {
                     self.domainc_cache.add_domain(domain, cd.clone()).await;
                     return Ok(Some(cd.id));
@@ -37,40 +42,37 @@ impl CrawlerStorage {
         };
         Ok(dom_id)
     }
-    pub async fn check_if_url_allowed(
-        &self,
-        url: &Url,
-        user_agent: &str,
-    ) -> Result<UrlAccess, CrawlerError> {
+    pub async fn check_if_url_allowed(&self, url: &Url) -> Result<UrlAccess, CrawlerError> {
         let clone = url.clone();
         let domain = match clone.domain() {
             Some(d) => d,
             None => return Ok(UrlAccess::URLWithoutHost),
         };
-        let robot = match self.domainc_cache.get_domain_robot(domain).await {
-            Some(rob) => Some(rob),
+        let cached_data = match self.domainc_cache.get_cached_domain(domain).await {
+            Some(cd) => cd,
             None => {
-                let temp = self.db.get_cache_info_about_domain(domain).await?;
-                if temp.is_none() {
-                    return Ok(UrlAccess::UnknownDomain);
+                let db_data = self
+                    .db
+                    .get_cache_info_about_domain(domain, self.agent_name.as_str())
+                    .await?;
+
+                match db_data {
+                    Some(cd) => {
+                        self.domainc_cache.add_domain(domain, cd.clone()).await;
+                        cd
+                    }
+                    None => return Ok(UrlAccess::UnknownDomain),
                 }
-                let temp = temp.unwrap();
-                self.domainc_cache.add_domain(domain, temp.clone());
-                temp.robot
             }
         };
-        match robot {
-            Some(r) => {
-                let path = url.path();
-                let robot = Robot::new(user_agent, r.as_bytes())?;
-
-                if robot.allowed(path) {
-                    return Ok(UrlAccess::Allowed);
-                } else {
-                    return Ok(UrlAccess::Disallowed);
-                }
+        if let Some(ref robot) = cached_data.robot {
+            if robot.allowed(url.path()) {
+                return Ok(UrlAccess::Allowed);
+            } else {
+                return Ok(UrlAccess::Disallowed);
             }
-            None => return Ok(UrlAccess::Allowed),
+        } else {
+            return Ok(UrlAccess::Allowed);
         }
         unreachable!("Unreach in check_if_url_allowed")
     }
@@ -89,11 +91,12 @@ impl CrawlerStorage {
         self.domainc_cache
             .add_domain(
                 &domain_data.domain_string,
-                CachedData {
+                CachedData::new(
                     id,
-                    robot: domain_data.robots.clone(),
-                    delay: Duration::from_secs_f32(domain_data.delay),
-                },
+                    domain_data.robots.clone(),
+                    domain_data.delay,
+                    self.agent_name.as_str(),
+                )?,
             )
             .await;
         Ok(id)
@@ -103,7 +106,10 @@ impl CrawlerStorage {
         match delay {
             Some(d) => return Ok(d),
             None => {
-                let cd = self.db.get_cache_info_about_domain(domain).await?;
+                let cd = self
+                    .db
+                    .get_cache_info_about_domain(domain, self.agent_name.as_str())
+                    .await?;
                 if let Some(cache) = cd {
                     let temp = cache.delay;
                     self.domainc_cache.add_domain(domain, cache).await;

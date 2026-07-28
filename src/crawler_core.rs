@@ -6,7 +6,6 @@ use crate::{
     storage::crawler_storage::CrawlerStorage,
     storage::db::{CrawlerDB, UrlAccess},
 };
-use fastbloom::BloomFilter;
 use std::{
     sync::{
         Arc, Mutex,
@@ -16,7 +15,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 use url::Url;
-const EXPECTED_NUM_OF_URLS: usize = 10_000_000;
 
 pub struct TaskGuard(Arc<AtomicUsize>);
 impl Drop for TaskGuard {
@@ -54,7 +52,7 @@ impl CrawlerCore {
         let (tx, rx) = mpsc::channel::<Url>(self.tokio_workers * 500);
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
 
-        let storage = CrawlerStorage::new(self.db_name.as_str()).await?;
+        let storage = CrawlerStorage::new(self.db_name.as_str(), self.agent_name.clone()).await?;
 
         tx.send(start_url.clone()).await.unwrap();
         self.active_tasks.store(1, Ordering::SeqCst);
@@ -69,7 +67,6 @@ impl CrawlerCore {
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
             let drl = DomainRateLimiter::new(Duration::from_secs(1));
-            let agent_name_clone = self.agent_name.clone();
             let storage_clone = storage.clone();
 
             let handle = tokio::spawn(async move {
@@ -79,7 +76,6 @@ impl CrawlerCore {
                     keywords_clone,
                     counter_clone,
                     active_tasks_clone,
-                    &agent_name_clone,
                     drl.clone(),
                     storage_clone,
                 )
@@ -96,6 +92,7 @@ impl CrawlerCore {
                 );
                 break;
             }
+            println!("PARSED: {}", self.pages_crawled.load(Ordering::SeqCst));
         }
         for worker in workers {
             worker.abort();
@@ -109,7 +106,6 @@ impl CrawlerCore {
         keywords: Arc<Option<Vec<String>>>,
         counter: Arc<AtomicUsize>,
         active_tasks: Arc<AtomicUsize>,
-        agent_name: &str,
         drl: DomainRateLimiter,
         storage: CrawlerStorage,
     ) -> Result<(), CrawlerError> {
@@ -137,15 +133,8 @@ impl CrawlerCore {
                 continue;
             }
             let _task_guard = TaskGuard(Arc::clone(&active_tasks));
-            match Self::process_single_url(
-                &url,
-                &keywords,
-                &counter,
-                agent_name,
-                drl.clone(),
-                storage.clone(),
-            )
-            .await
+            match Self::process_single_url(&url, &keywords, &counter, drl.clone(), storage.clone())
+                .await
             {
                 Ok(mut outbound_links) => {
                     outbound_links.sort();
@@ -180,21 +169,12 @@ impl CrawlerCore {
         url: &Url,
         keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
-        agent_name: &str,
         drl: DomainRateLimiter,
         storage: CrawlerStorage,
     ) -> Result<Vec<Url>, CrawlerError> {
-        match storage.check_if_url_allowed(url, agent_name).await? {
+        match storage.check_if_url_allowed(url).await? {
             UrlAccess::UnknownDomain => {
-                Self::handle_unknown_domain(
-                    url,
-                    keywords,
-                    counter,
-                    agent_name,
-                    drl,
-                    storage.clone(),
-                )
-                .await
+                Self::handle_unknown_domain(url, keywords, counter, drl, storage.clone()).await
             }
             UrlAccess::Allowed => {
                 Self::handle_allowed_domain(url, keywords, counter, storage.clone()).await
@@ -207,17 +187,18 @@ impl CrawlerCore {
         url: &Url,
         keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
-        agent_name: &str,
         drl: DomainRateLimiter,
         storage: CrawlerStorage,
     ) -> Result<Vec<Url>, CrawlerError> {
         let mut link_fetcher = LinkFetcher::new(url.clone(), 0.0);
 
-        let dom_data = link_fetcher.get_domain_data(agent_name).await?;
+        let dom_data = link_fetcher
+            .get_domain_data(storage.agent_name.as_str())
+            .await?;
         let delay = dom_data.delay;
         drl.update_delay(&dom_data.domain_string, Duration::from_secs_f32(delay));
         let id = storage.save_domain(&dom_data).await?;
-        match storage.check_if_url_allowed(url, agent_name).await? {
+        match storage.check_if_url_allowed(url).await? {
             UrlAccess::Allowed => {
                 link_fetcher.delay = delay;
                 while !drl.try_acquire(&dom_data.domain_string) {
@@ -271,12 +252,11 @@ impl CrawlerCore {
     ) -> Result<(), CrawlerError> {
         let host = url.domain().ok_or(CrawlerError::UrlDoesntContainDomain())?;
 
-        let dom_id = storage.get_domain_id(host).await?;
-        if let Some(id) = dom_id {
-            storage.save_parsed_page(id, parsed_page).await?;
-        } else {
-            panic!("No dom id");
-        }
+        let id = storage
+            .get_domain_id(host)
+            .await?
+            .ok_or_else(|| CrawlerError::UrlDoesntContainDomain())?;
+        storage.save_parsed_page(id, parsed_page).await?;
         counter.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

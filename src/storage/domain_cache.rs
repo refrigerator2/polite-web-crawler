@@ -1,12 +1,35 @@
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
+use texting_robots::Robot;
 
-#[derive(Clone, Debug, PartialEq)]
+use crate::crawler_error::CrawlerError;
+
+#[derive(Clone, Debug)]
 pub struct CachedData {
     pub id: i64,
-    pub robot: Option<Arc<String>>,
+    pub robot: Option<Arc<Robot>>,
     pub delay: Duration,
+}
+impl CachedData {
+    pub fn new(
+        id: i64,
+        robot: Option<Arc<String>>,
+        delay: f32,
+        agent: &str,
+    ) -> Result<CachedData, CrawlerError> {
+        let robot = if let Some(r) = robot {
+            let robot_matcher = Robot::new(agent, r.as_bytes())?;
+            Some(Arc::new(robot_matcher))
+        } else {
+            None
+        };
+        Ok(CachedData {
+            id,
+            robot,
+            delay: Duration::from_secs_f32(delay),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -34,7 +57,7 @@ impl DomainCache {
             None => None,
         }
     }
-    pub async fn get_domain_robot(&self, domain: &str) -> Option<Arc<String>> {
+    pub async fn get_domain_robot(&self, domain: &str) -> Option<Arc<Robot>> {
         self.cache.get(domain).await.and_then(|cd| cd.robot)
     }
     pub async fn get_domain_delay(&self, domain: &str) -> Option<Duration> {
@@ -53,47 +76,37 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn default_situation() {
-        let cache = DomainCache::new(Duration::from_millis(50), 1);
+    async fn test_domain_cache_lifecycle() -> Result<(), CrawlerError> {
+        let cache = DomainCache::new(Duration::from_millis(100), 10);
 
         assert_eq!(cache.get_domain_id("smt").await, None);
         assert_eq!(cache.get_domain_delay("smt").await, None);
 
-        let test_robot = Arc::new("User-agent: * Disallow:".to_string());
-
-        let cd_1 = CachedData {
-            id: 67,
-            robot: Some(Arc::clone(&test_robot)),
-            delay: Duration::from_secs_f32(1.5),
-        };
+        let raw_robots = Arc::new("User-agent: *\nDisallow: /admin".to_string());
+        let cd_1 = CachedData::new(67, Some(raw_robots), 1.5, "MyBot")?;
 
         cache.add_domain("new_domain", cd_1).await;
 
         assert_eq!(cache.get_domain_id("new_domain").await, Some(67));
         assert_eq!(
-            cache.get_domain_robot("new_domain").await,
-            Some(test_robot.clone())
-        );
-        assert_eq!(
             cache.get_domain_delay("new_domain").await,
             Some(Duration::from_secs_f32(1.5))
         );
 
-        let cd_2 = CachedData {
-            id: 100,
-            robot: None,
-            delay: Duration::from_secs_f32(0.5),
-        };
+        let robot = cache.get_domain_robot("new_domain").await;
+        assert!(robot.is_some());
+        assert!(!robot.unwrap().allowed("https://example.com/admin"));
 
-        cache.add_domain("no_robots_domain", cd_2.clone()).await;
+        let cd_2 = CachedData::new(100, None, 0.5, "MyBot")?;
+        cache.add_domain("no_robots_domain", cd_2).await;
 
-        assert_eq!(cache.get_domain_robot("no_robots_domain").await, None);
-        assert_eq!(
-            cache.get_cached_domain("no_robots_domain").await,
-            Some(cd_2)
-        );
+        let robot = cache.get_domain_robot("new_domain").await;
+        assert!(robot.is_some());
+        assert!(cache.get_domain_robot("no_robots_domain").await.is_none());
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(cache.get_domain_id("new_domain").await, None);
+
+        Ok(())
     }
 }
