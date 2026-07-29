@@ -1,3 +1,5 @@
 /target
 *.db
 todo.txt
+*.db-wal
+*.db-shm
