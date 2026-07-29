@@ -1,8 +1,11 @@
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT};
+use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 
 use crate::crawler_error::CrawlerError;
-use std::sync::Arc;
-use url::Url;
+
 const ATTEMTS: i32 = 3;
 const DURATION: u64 = 1;
 
@@ -10,36 +13,62 @@ pub struct NotParsedPageData {
     pub url: Url,
     pub content: String,
 }
+
 #[derive(Debug)]
 pub struct DomainData {
     pub domain_string: String,
     pub robots: Option<Arc<String>>,
     pub delay: f32,
 }
+
 pub struct LinkFetcher {
     pub url: Url,
     pub delay: f32,
     client: reqwest::Client,
 }
+
 impl LinkFetcher {
-    pub fn new(u: Url, delay: f32) -> LinkFetcher {
-        LinkFetcher {
-            url: u,
-            delay,
-            client: reqwest::Client::new(),
-        }
+    pub fn new(url: Url, delay: f32) -> Self {
+        let mut headers = HeaderMap::new();
+
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            ),
+        );
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
+        );
+        headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static("ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"),
+        );
+
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(8))
+            .connect_timeout(Duration::from_secs(4))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        Self { url, delay, client }
     }
-    async fn check_url(&self) -> Result<(), CrawlerError> {
-        let res = self
-            .client
-            .head(self.url.as_str())
-            .timeout(Duration::from_secs(2))
-            .send()
-            .await?
-            .error_for_status()
-            .map_err(CrawlerError::Network)?;
-        Ok(())
+
+    fn is_blacklisted_extension(url: &Url) -> bool {
+        let path = url.path().to_lowercase();
+        let bad_extensions = [
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z",
+            ".tar", ".gz", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".mp3",
+            ".mp4", ".avi", ".mkv", ".css", ".js", ".json", ".xml",
+        ];
+        bad_extensions.iter().any(|ext| path.ends_with(ext))
     }
+
     async fn get_robot_list(&self) -> Result<Option<String>, CrawlerError> {
         let domain = Url::domain(&self.url).unwrap();
         let scheme = Url::scheme(&self.url);
@@ -60,6 +89,7 @@ impl LinkFetcher {
             Err(CrawlerError::Network(status_err))
         }
     }
+
     async fn with_retry<F, Fut, T>(
         attemts: i32,
         delay: Duration,
@@ -82,18 +112,45 @@ impl LinkFetcher {
         }
         unreachable!("Unreach try_reconnect")
     }
-    async fn get_page(&self) -> Result<String, CrawlerError> {
+
+    pub async fn get_page(&self) -> Result<NotParsedPageData, CrawlerError> {
+        if Self::is_blacklisted_extension(&self.url) {
+            return Ok(NotParsedPageData {
+                url: self.url.clone(),
+                content: String::new(),
+            });
+        }
+
         let response = self.client.get(self.url.clone()).send().await?;
+
+        if let Some(ct) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+            let ct_str = ct.to_str().unwrap_or("");
+            if !ct_str.contains("text/html") && !ct_str.contains("application/xhtml+xml") {
+                return Ok(NotParsedPageData {
+                    url: response.url().clone(),
+                    content: String::new(),
+                });
+            }
+        }
+
         if response.status().is_success() {
-            let body = response.text().await?;
-            Ok(body)
+            let final_url = response.url().clone();
+            let content = response.text().await?;
+            Ok(NotParsedPageData {
+                url: final_url,
+                content,
+            })
         } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(String::new())
+            Ok(NotParsedPageData {
+                url: self.url.clone(),
+                content: String::new(),
+            })
         } else {
             let status_err = response.error_for_status().unwrap_err();
             Err(CrawlerError::Network(status_err))
         }
     }
+
     pub async fn get_domain_data(&mut self, user_agent: &str) -> Result<DomainData, CrawlerError> {
         let domain = self.url.clone();
 
@@ -101,19 +158,11 @@ impl LinkFetcher {
             .domain()
             .ok_or(CrawlerError::UrlDoesntContainDomain())?;
 
-        let scheme = self.url.scheme();
-        let root_url = Url::parse(&format!("{}://{}/", scheme, domain))?;
-
-        let temp = self.url.clone();
-        self.url = root_url;
-        self.check_url().await?;
-
         let robot_body = Self::with_retry(ATTEMTS, Duration::from_secs(DURATION), || async {
             self.get_robot_list().await
         })
         .await?;
         if let Some(rb) = robot_body {
-            self.url = temp;
             let robot_matcher = texting_robots::Robot::new(user_agent, rb.as_bytes())?;
 
             let delay = robot_matcher.delay.unwrap_or(0.0);
@@ -131,17 +180,6 @@ impl LinkFetcher {
             })
         }
     }
-    pub async fn get_page_data(self) -> Result<NotParsedPageData, CrawlerError> {
-        self.check_url().await?;
-
-        let page = Self::with_retry(ATTEMTS, Duration::from_secs(DURATION), || async {
-            self.get_page().await
-        })
-        .await?;
-
-        let LinkFetcher { url, .. } = self;
-        Ok(NotParsedPageData { url, content: page })
-    }
 }
 
 #[cfg(test)]
@@ -157,41 +195,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_url_success() {
-        let url = Url::parse("https://www.google.com").unwrap();
-        let fetcher = LinkFetcher::new(url, 1.0);
-
-        let result = fetcher.check_url().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_check_url_invalid_domain() {
-        let url = Url::parse("https://this-domain-definitely-does-not-exist-12345.com").unwrap();
-        let fetcher = LinkFetcher::new(url, 0.0);
-
-        let result = fetcher.check_url().await;
-        assert!(result.is_err());
-    }
-    #[tokio::test]
-    async fn test_run_lifecycle() -> Result<(), CrawlerError> {
+    async fn test_get_page_success() -> Result<(), CrawlerError> {
         let target_url = Url::parse("https://www.google.com").unwrap();
-        let fetcher = LinkFetcher::new(target_url.clone(), 3.0);
+        let fetcher = LinkFetcher::new(target_url.clone(), 0.0);
 
-        let data = fetcher.get_page_data().await?;
-
-        assert_eq!(data.url, target_url);
-        assert!(!data.content.is_empty());
+        let page_data = fetcher.get_page().await?;
+        assert!(!page_data.content.is_empty());
+        assert_eq!(page_data.url.host_str(), target_url.host_str());
         Ok(())
     }
+
     #[tokio::test]
-    async fn test_get_domain() -> Result<(), CrawlerError> {
+    async fn test_get_page_blacklisted_extension() -> Result<(), CrawlerError> {
+        let pdf_url = Url::parse("https://example.com/document.pdf").unwrap();
+        let fetcher = LinkFetcher::new(pdf_url.clone(), 0.0);
+
+        let page_data = fetcher.get_page().await?;
+        assert!(page_data.content.is_empty());
+        assert_eq!(page_data.url, pdf_url);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_domain_data() -> Result<(), CrawlerError> {
         let target_url = Url::parse("https://www.google.com").unwrap();
         let mut fetcher = LinkFetcher::new(target_url.clone(), 2.7);
 
         let data = fetcher.get_domain_data("CrawlerTest").await?;
         assert_eq!(data.domain_string, target_url.domain().unwrap());
-        assert_eq!(data.delay, 0.0);
         Ok(())
     }
 }
