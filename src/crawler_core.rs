@@ -234,7 +234,7 @@ impl CrawlerCore {
     ) -> Result<Vec<Url>, CrawlerError> {
         let url_copy = link_fetcher.url.clone();
 
-        let raw_html_data = link_fetcher.get_page_data().await?;
+        let raw_html_data = link_fetcher.get_page().await?;
 
         let parsed_page = ParsedPage::parse(raw_html_data, Arc::clone(keywords));
 
