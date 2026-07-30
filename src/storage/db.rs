@@ -1,6 +1,6 @@
 use crate::{
-    crawler_error::CrawlerError, html_parser::ParsedPage, link_fetcher::DomainData,
-    storage::domain_cache::CachedData,
+    error::crawler_error::CrawlerError, network::link_fetcher::DomainData,
+    parsers::html_parser::ParsedPage, storage::domain_cache::CachedData,
 };
 use sqlx::{
     Row, SqlitePool,
@@ -192,8 +192,7 @@ impl CrawlerDB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crawler_error::CrawlerError;
-    use crate::link_fetcher::NotParsedPageData;
+    use crate::network::link_fetcher::NotParsedPageData;
     use std::sync::Arc;
     use std::time::Duration;
     use url::Url;

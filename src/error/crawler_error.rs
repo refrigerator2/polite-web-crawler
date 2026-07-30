@@ -17,4 +17,6 @@ pub enum CrawlerError {
 
     #[error("No Domain")]
     UrlDoesntContainDomain(),
+    #[error("No xml content inside")]
+    NoXMLContent(),
 }
