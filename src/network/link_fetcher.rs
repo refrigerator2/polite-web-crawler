@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::error::crawler_error::CrawlerError;
 
-const ATTEMTS: i32 = 3;
+const ATTEMPTS: i32 = 3;
 const DURATION: Duration = Duration::from_secs(1);
 
 pub struct NotParsedPageData {
@@ -70,15 +70,20 @@ impl LinkFetcher {
     }
 
     async fn get_robot_list(&self) -> Result<Option<String>, CrawlerError> {
-        let domain = Url::domain(&self.url).unwrap();
-        let scheme = Url::scheme(&self.url);
-        let main_link = Url::parse((scheme.to_string() + "://" + domain).as_str());
-        if let Err(e) = main_link {
-            return Err(CrawlerError::InvalidUrl(e));
-        }
-        let main_link = main_link.unwrap();
-        let robot_url = Url::join(&main_link, "robots.txt")?;
-        let response = self.client.get(robot_url.clone()).send().await?;
+        let domain = self
+            .url
+            .domain()
+            .ok_or_else(|| CrawlerError::UrlDoesntContainDomain())?;
+
+        let scheme = self.url.scheme();
+        let base_url_str = format!("{}://{}", scheme, domain);
+        let main_link = Url::parse(&base_url_str).map_err(CrawlerError::InvalidUrl)?;
+
+        let robot_url = main_link
+            .join("robots.txt")
+            .map_err(CrawlerError::InvalidUrl)?;
+
+        let response = self.client.get(robot_url).send().await?;
         if response.status().is_success() {
             let body = response.text().await?;
             Ok(Some(body))
@@ -91,7 +96,7 @@ impl LinkFetcher {
     }
 
     async fn with_retry<F, Fut, T>(
-        attemts: i32,
+        attempts: i32,
         delay: Duration,
         mut operation: F,
     ) -> Result<T, CrawlerError>
@@ -99,18 +104,18 @@ impl LinkFetcher {
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, CrawlerError>>,
     {
-        for i in 1..=attemts {
+        for i in 1..=attempts {
             match operation().await {
                 Ok(res) => return Ok(res),
                 Err(e) => {
-                    if i == attemts {
+                    if i == attempts {
                         return Err(e);
                     }
                     tokio::time::sleep(delay).await;
                 }
             }
         }
-        unreachable!("Unreach try_reconnect")
+        unreachable!("Unreachable retry block")
     }
 
     pub async fn get_page(&self) -> Result<NotParsedPageData, CrawlerError> {
@@ -121,7 +126,7 @@ impl LinkFetcher {
             });
         }
 
-        let response = Self::with_retry(ATTEMTS, DURATION, || async {
+        let response = Self::with_retry(ATTEMPTS, DURATION, || async {
             let resp = self
                 .client
                 .get(self.url.clone())
@@ -161,34 +166,35 @@ impl LinkFetcher {
     }
 
     pub async fn get_domain_data(&self, user_agent: &str) -> Result<DomainData, CrawlerError> {
-        let domain = self.url.clone();
-
-        let domain = domain
+        let domain_str = self
+            .url
             .domain()
-            .ok_or(CrawlerError::UrlDoesntContainDomain())?;
+            .ok_or_else(|| CrawlerError::UrlDoesntContainDomain())?
+            .to_string();
 
         let robot_body =
-            Self::with_retry(ATTEMTS, DURATION, || async { self.get_robot_list().await }).await?;
+            Self::with_retry(ATTEMPTS, DURATION, || async { self.get_robot_list().await }).await?;
+
         if let Some(rb) = robot_body {
             let robot_matcher = texting_robots::Robot::new(user_agent, rb.as_bytes())?;
-
             let delay = robot_matcher.delay.unwrap_or(0.0);
 
             Ok(DomainData {
-                domain_string: domain.to_string(),
+                domain_string: domain_str,
                 robots: Some(Arc::new(rb)),
                 delay,
             })
         } else {
             Ok(DomainData {
-                domain_string: domain.to_string(),
+                domain_string: domain_str,
                 robots: None,
                 delay: 0.0,
             })
         }
     }
+
     pub async fn get_xml_content(&self) -> Result<String, CrawlerError> {
-        let response = Self::with_retry(ATTEMTS, DURATION, || async {
+        let response = Self::with_retry(ATTEMPTS, DURATION, || async {
             let resp = self
                 .client
                 .get(self.url.clone())
@@ -198,28 +204,26 @@ impl LinkFetcher {
             Ok(resp)
         })
         .await?;
-        let content_type_header = response
+
+        let ct_val = response
             .headers()
-            .iter()
-            .find(|(name, _)| name.as_str().eq_ignore_ascii_case("content-type"))
-            .map(|(_, val)| val);
-        if let Some(ct) = content_type_header {
-            if let Ok(ct_str) = ct.to_str() {
-                let ct_lower = ct_str.to_lowercase();
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
 
-                let is_xml_mime = ct_lower.contains("text/xml")
-                    || ct_lower.contains("application/xml")
-                    || ct_lower.contains("application/x-xml")
-                    || ct_lower.contains("+xml")
-                    || ct_lower.contains("gzip")
-                    || ct_lower.contains("octet-stream");
+        if let Some(ct_str) = ct_val {
+            let ct_lower = ct_str.to_lowercase();
 
-                if !is_xml_mime {
-                    return Err(CrawlerError::NoXMLContent());
-                }
+            let is_xml_mime = ct_lower.contains("text/xml")
+                || ct_lower.contains("application/xml")
+                || ct_lower.contains("application/x-xml")
+                || ct_lower.contains("+xml")
+                || ct_lower.contains("gzip")
+                || ct_lower.contains("octet-stream");
+
+            if !is_xml_mime {
+                return Err(CrawlerError::NoXMLContent());
             }
         }
-
         if response.status().is_success() {
             let content = response.text().await?;
             Ok(content)
@@ -271,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_domain_data() -> Result<(), CrawlerError> {
         let target_url = Url::parse("https://www.google.com").unwrap();
-        let mut fetcher = LinkFetcher::new(target_url.clone(), 2.7);
+        let fetcher = LinkFetcher::new(target_url.clone(), 2.7);
 
         let data = fetcher.get_domain_data("CrawlerTest").await?;
         assert_eq!(data.domain_string, target_url.domain().unwrap());
@@ -292,11 +296,10 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/sitemap.xml"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/xml; charset=utf-8")
-                    .set_body_string(xml_body),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                xml_body.as_bytes().to_vec(),
+                "application/xml; charset=utf-8",
+            ))
             .expect(1..)
             .mount(&mock_server)
             .await;
@@ -316,8 +319,7 @@ mod tests {
             .and(path("/sitemap.xml.gz"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/gzip")
-                    .set_body_string(xml_body),
+                    .set_body_raw(xml_body.as_bytes().to_vec(), "application/gzip"),
             )
             .expect(1..)
             .mount(&mock_server)
@@ -337,7 +339,7 @@ mod tests {
             .and(path("/not-xml"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/html; charset=utf-8")
+                    .insert_header("Content-Type", "text/html; charset=utf-8")
                     .set_body_string("<html><body>Not XML</body></html>"),
             )
             .expect(1..)
@@ -357,7 +359,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/missing.xml"))
             .respond_with(
-                ResponseTemplate::new(404).insert_header("content-type", "application/xml"),
+                ResponseTemplate::new(404).insert_header("Content-Type", "application/xml"),
             )
             .expect(1..)
             .mount(&mock_server)
@@ -376,7 +378,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/error.xml"))
             .respond_with(
-                ResponseTemplate::new(500).insert_header("content-type", "application/xml"),
+                ResponseTemplate::new(500).insert_header("Content-Type", "application/xml"),
             )
             .expect(1..)
             .mount(&mock_server)
