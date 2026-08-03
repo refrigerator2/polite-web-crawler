@@ -1,6 +1,6 @@
-use crate::crawler_error::CrawlerError;
-use crate::html_parser::ParsedPage;
-use crate::link_fetcher::DomainData;
+use crate::error::crawler_error::CrawlerError;
+use crate::network::link_fetcher::DomainData;
+use crate::parsers::html_parser::ParsedPage;
 use crate::storage::db::{CrawlerDB, UrlAccess};
 use crate::storage::domain_cache::{CachedData, DomainCache};
 use crate::storage::seen_urls::{self, SeenUrls};
@@ -86,7 +86,7 @@ impl CrawlerStorage {
     ) -> Result<(), CrawlerError> {
         self.db.save_parsed_page(dom_id, page).await
     }
-    pub async fn save_domain(&self, domain_data: &DomainData) -> Result<i64, CrawlerError> {
+    pub async fn save_domain(&self, domain_data: &DomainData) -> Result<Vec<String>, CrawlerError> {
         let id = self.db.save_domain(domain_data).await?;
         self.domainc_cache
             .add_domain(
@@ -99,7 +99,10 @@ impl CrawlerStorage {
                 )?,
             )
             .await;
-        Ok(id)
+        Ok(self
+            .domainc_cache
+            .get_sitemaps(&domain_data.domain_string)
+            .await)
     }
     pub async fn get_delay(&self, domain: &str) -> Result<Duration, CrawlerError> {
         let delay = self.domainc_cache.get_domain_delay(domain).await;

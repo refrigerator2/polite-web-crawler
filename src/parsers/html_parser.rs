@@ -1,4 +1,4 @@
-use crate::link_fetcher::NotParsedPageData;
+use crate::network::link_fetcher::NotParsedPageData;
 use scraper::{Html, Selector};
 use std::sync::Arc;
 use url::{ParseError, Url};

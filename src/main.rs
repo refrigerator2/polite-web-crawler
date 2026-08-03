@@ -1,6 +1,6 @@
 use clap::Parser;
-use crawler::crawler_core::CrawlerCore;
-use crawler::crawler_error::CrawlerError;
+use crawler::core::crawler_core::CrawlerCore;
+use crawler::error::crawler_error::CrawlerError;
 use std::sync::Arc;
 use url::Url;
 
