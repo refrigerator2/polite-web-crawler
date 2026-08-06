@@ -406,6 +406,7 @@ dependencies = [
  "quick-xml",
  "reqwest",
  "scraper",
+ "simhash",
  "sqlx",
  "texting_robots",
  "thiserror 2.0.18",
@@ -715,7 +716,7 @@ dependencies = [
  "libm",
  "portable-atomic",
  "rand 0.9.5",
- "siphasher",
+ "siphasher 1.0.3",
 ]
 
 [[package]]
@@ -1623,7 +1624,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
 dependencies = [
- "siphasher",
+ "siphasher 1.0.3",
 ]
 
 [[package]]
@@ -2227,6 +2228,21 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "simhash"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9628dcb1d2bb7446ad04e2c6c765d9eff363b9b8a88033303dabbcc9dd60c02"
+dependencies = [
+ "siphasher 0.3.11",
+]
+
+[[package]]
+name = "siphasher"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b58827f4464d87d377d175e90bf58eb00fd8716ff0a62f80356b5e61555d0d"
 
 [[package]]
 name = "siphasher"
