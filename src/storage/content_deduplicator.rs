@@ -1,13 +1,14 @@
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
+#[derive(Clone)]
 pub struct ContentDeduplicator {
-    hashes: RwLock<Vec<u64>>,
+    hashes: Arc<RwLock<Vec<u64>>>,
     max_dist: u32,
 }
 impl ContentDeduplicator {
     pub fn init(hashes: Vec<u64>, dist: u32) -> Self {
         Self {
-            hashes: RwLock::new(hashes),
+            hashes: Arc::new(RwLock::new(hashes)),
             max_dist: dist,
         }
     }
@@ -34,10 +35,11 @@ impl ContentDeduplicator {
             .iter()
             .any(|h| simhash::hamming_distance(*h, text_hash) <= self.max_dist)
     }
-    pub fn insert(&self, text: &str) {
+    pub fn insert(&self, text: &str) -> u64 {
         let new_hash = Self::calculate_hash(text);
         let mut guard = self.hashes.write().unwrap();
         guard.push(new_hash);
+        new_hash
     }
 }
 #[cfg(test)]

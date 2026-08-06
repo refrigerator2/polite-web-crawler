@@ -1,6 +1,7 @@
 use crate::error::crawler_error::CrawlerError;
 use crate::network::link_fetcher::DomainData;
 use crate::parsers::html_parser::ParsedPage;
+use crate::storage::content_deduplicator::ContentDeduplicator;
 use crate::storage::db::{CrawlerDB, UrlAccess};
 use crate::storage::domain_cache::{CachedData, DomainCache};
 use crate::storage::seen_urls::{self, SeenUrls};
@@ -8,25 +9,36 @@ use std::{sync::Arc, time::Duration};
 use texting_robots::Robot;
 use url::Url;
 
+use std::path::Path;
 #[derive(Clone)]
 
 pub struct CrawlerStorage {
     seen_urls: SeenUrls,
     db: CrawlerDB,
-    domainc_cache: DomainCache,
+    domain_cache: DomainCache,
     pub agent_name: String,
+    dedup: ContentDeduplicator,
 }
 impl CrawlerStorage {
     pub async fn new(db_name: &str, user_agent: String) -> Result<Self, CrawlerError> {
+        let db_exists = Path::new(db_name).exists();
+        let db = CrawlerDB::new(db_name).await?;
+        let hashes = match db_exists {
+            true => db.get_simhashes().await?,
+            false => {
+                vec![]
+            }
+        };
         Ok(Self {
             seen_urls: SeenUrls::new(),
             db: CrawlerDB::new(db_name).await?,
-            domainc_cache: DomainCache::new(Duration::from_secs(360), 20),
+            domain_cache: DomainCache::new(Duration::from_secs(360), 20),
             agent_name: user_agent,
+            dedup: ContentDeduplicator::init(hashes, 3),
         })
     }
     pub async fn get_domain_id(&self, domain: &str) -> Result<Option<i64>, CrawlerError> {
-        let dom_id = match self.domainc_cache.get_domain_id(domain).await {
+        let dom_id = match self.domain_cache.get_domain_id(domain).await {
             Some(id) => Some(id),
             None => {
                 let temp = self
@@ -34,7 +46,7 @@ impl CrawlerStorage {
                     .get_cache_info_about_domain(domain, self.agent_name.as_str())
                     .await?;
                 if let Some(cd) = temp {
-                    self.domainc_cache.add_domain(domain, cd.clone()).await;
+                    self.domain_cache.add_domain(domain, cd.clone()).await;
                     return Ok(Some(cd.id));
                 }
                 None
@@ -48,7 +60,7 @@ impl CrawlerStorage {
             Some(d) => d,
             None => return Ok(UrlAccess::URLWithoutHost),
         };
-        let cached_data = match self.domainc_cache.get_cached_domain(domain).await {
+        let cached_data = match self.domain_cache.get_cached_domain(domain).await {
             Some(cd) => cd,
             None => {
                 let db_data = self
@@ -58,7 +70,7 @@ impl CrawlerStorage {
 
                 match db_data {
                     Some(cd) => {
-                        self.domainc_cache.add_domain(domain, cd.clone()).await;
+                        self.domain_cache.add_domain(domain, cd.clone()).await;
                         cd
                     }
                     None => return Ok(UrlAccess::UnknownDomain),
@@ -84,11 +96,19 @@ impl CrawlerStorage {
         dom_id: i64,
         page: &ParsedPage,
     ) -> Result<(), CrawlerError> {
-        self.db.save_parsed_page(dom_id, page).await
+        if let Some(txt) = page.clean_text.clone() {
+            if !self.dedup.is_duplicate(&txt) {
+                let h = self.dedup.insert(&txt);
+                self.db.save_parsed_page(dom_id, page, Some(h)).await?;
+            }
+        } else {
+            self.db.save_parsed_page(dom_id, page, None).await?;
+        }
+        Ok(())
     }
     pub async fn save_domain(&self, domain_data: &DomainData) -> Result<Vec<String>, CrawlerError> {
         let id = self.db.save_domain(domain_data).await?;
-        self.domainc_cache
+        self.domain_cache
             .add_domain(
                 &domain_data.domain_string,
                 CachedData::new(
@@ -100,12 +120,12 @@ impl CrawlerStorage {
             )
             .await;
         Ok(self
-            .domainc_cache
+            .domain_cache
             .get_sitemaps(&domain_data.domain_string)
             .await)
     }
     pub async fn get_delay(&self, domain: &str) -> Result<Duration, CrawlerError> {
-        let delay = self.domainc_cache.get_domain_delay(domain).await;
+        let delay = self.domain_cache.get_domain_delay(domain).await;
         match delay {
             Some(d) => return Ok(d),
             None => {
@@ -115,7 +135,7 @@ impl CrawlerStorage {
                     .await?;
                 if let Some(cache) = cd {
                     let temp = cache.delay;
-                    self.domainc_cache.add_domain(domain, cache).await;
+                    self.domain_cache.add_domain(domain, cache).await;
                     return Ok(temp);
                 }
                 return Ok(Duration::from_secs(1));
