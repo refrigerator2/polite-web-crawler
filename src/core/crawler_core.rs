@@ -182,9 +182,7 @@ impl CrawlerCore {
                 if path.ends_with(".xml") || path.ends_with(".xml.gz") {
                     let domain = url.domain().ok_or(CrawlerError::UrlDoesntContainDomain())?;
 
-                    if !drl.try_acquire(domain) {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
+                    drl.await_acquiring(domain).await;
 
                     let delay = storage.get_delay(domain).await?;
                     let sitemaps_parser =
@@ -219,9 +217,8 @@ impl CrawlerCore {
         match storage.check_if_url_allowed(url).await? {
             UrlAccess::Allowed => {
                 link_fetcher.delay = delay;
-                while !drl.try_acquire(&dom_data.domain_string) {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
+
+                drl.await_acquiring(&dom_data.domain_string).await;
                 let res =
                     Self::download_and_parse_page(link_fetcher, keywords, counter, storage.clone())
                         .await;
