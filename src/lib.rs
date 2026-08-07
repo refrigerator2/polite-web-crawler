@@ -1,6 +1,5 @@
-pub mod crawler_core;
-pub mod crawler_error;
-pub mod domain_rate_limiter;
-pub mod html_parser;
-pub mod link_fetcher;
+pub mod core;
+pub mod error;
+pub mod network;
+pub mod parsers;
 pub mod storage;

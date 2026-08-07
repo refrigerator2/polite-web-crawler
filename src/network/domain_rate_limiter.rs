@@ -52,6 +52,23 @@ impl DomainRateLimiter {
                 last_accessed: now - new_delay,
             });
     }
+    pub async fn await_acquiring(&self, domain: &str) {
+        let now = Instant::now();
+
+        let mut entry = self
+            .map
+            .entry(domain.to_string())
+            .or_insert_with(|| DomainState {
+                delay: self.default_delay,
+                last_accessed: now - self.default_delay,
+            });
+
+        let state = entry.value_mut();
+
+        let time = now.saturating_duration_since(state.last_accessed);
+        tokio::time::sleep(time).await;
+        state.last_accessed = now;
+    }
 }
 #[cfg(test)]
 mod tests {

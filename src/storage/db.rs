@@ -1,6 +1,6 @@
 use crate::{
-    crawler_error::CrawlerError, html_parser::ParsedPage, link_fetcher::DomainData,
-    storage::domain_cache::CachedData,
+    error::crawler_error::CrawlerError, network::link_fetcher::DomainData,
+    parsers::html_parser::ParsedPage, storage::domain_cache::CachedData,
 };
 use sqlx::{
     Row, SqlitePool,
@@ -9,7 +9,6 @@ use sqlx::{
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-
 const MAX_DB_RECONNECTS: usize = 3;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -59,6 +58,7 @@ impl CrawlerDB {
                 title TEXT,
                 description TEXT,
                 clean_text TEXT,
+                hash BIGINT,
                 FOREIGN KEY(dom_id) REFERENCES domains(dom_id) ON DELETE CASCADE
             )",
         )
@@ -72,23 +72,27 @@ impl CrawlerDB {
         &self,
         dom_id: i64,
         page: &ParsedPage,
+        hash: Option<u64>,
     ) -> Result<(), CrawlerError> {
+        let hash_i64 = hash.map(|h| h as i64);
         let mut backoff = Duration::from_secs(1);
         for i in 0..MAX_DB_RECONNECTS {
             let res = sqlx::query(
-                "INSERT INTO pages (dom_id, url, title, clean_text, description) 
-                 VALUES (?, ?, ?, ?, ?)
+                "INSERT INTO pages (dom_id, url, title, clean_text, description, hash) 
+                 VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT(url) DO UPDATE SET
                     dom_id = excluded.dom_id,
                     title = excluded.title,
                     clean_text = excluded.clean_text,
-                    description = excluded.description",
+                    description = excluded.description,
+                    hash = excluded.hash",
             )
             .bind(dom_id)
             .bind(page.url.as_str())
             .bind(page.title.as_deref())
             .bind(page.clean_text.as_deref())
             .bind(page.description.as_deref())
+            .bind(hash_i64)
             .execute(&self.pool)
             .await;
 
@@ -187,13 +191,42 @@ impl CrawlerDB {
         }
         Err(CrawlerError::DbError(sqlx::Error::RowNotFound))
     }
+    pub async fn get_simhashes(&self) -> Result<Vec<u64>, CrawlerError> {
+        let mut backoff = Duration::from_secs(1);
+        for i in 0..MAX_DB_RECONNECTS {
+            let res = sqlx::query_scalar("SELECT hash FROM pages WHERE hash IS NOT NULL")
+                .fetch_all(&self.pool)
+                .await;
+
+            match res {
+                Ok(raw_hashes) => {
+                    let hashes = raw_hashes.into_iter().map(|h: i64| h as u64).collect();
+
+                    return Ok(hashes);
+                }
+                Err(e) => {
+                    if i == MAX_DB_RECONNECTS - 1 {
+                        return Err(CrawlerError::DbError(e));
+                    }
+                    eprintln!(
+                        "attempt {}: Error during getting domain info by name: {}",
+                        i + 1,
+                        e
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
+        }
+        Err(CrawlerError::DbError(sqlx::Error::RowNotFound))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crawler_error::CrawlerError;
-    use crate::link_fetcher::NotParsedPageData;
+    use crate::network::link_fetcher::NotParsedPageData;
+    use crate::storage::content_deduplicator::{self, ContentDeduplicator};
     use std::sync::Arc;
     use std::time::Duration;
     use url::Url;
@@ -280,8 +313,9 @@ mod tests {
             },
             Arc::default(),
         );
-
-        let res = db.save_parsed_page(dom_id, &page).await;
+        let hash = ContentDeduplicator::init(Vec::new(), 3);
+        let h = hash.insert(&page.clean_text.clone().unwrap());
+        let res = db.save_parsed_page(dom_id, &page, Some(h)).await;
         assert!(res.is_ok());
 
         Ok(())

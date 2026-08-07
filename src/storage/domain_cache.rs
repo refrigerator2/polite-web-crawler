@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use texting_robots::Robot;
 
-use crate::crawler_error::CrawlerError;
+use crate::error::crawler_error::CrawlerError;
 
 #[derive(Clone, Debug)]
 pub struct CachedData {
@@ -65,6 +65,15 @@ impl DomainCache {
             Some(cd) => Some(cd.delay),
             None => None,
         }
+    }
+    pub async fn get_sitemaps(&self, domain: &str) -> Vec<String> {
+        self.cache
+            .get(domain)
+            .await
+            .and_then(|cd| cd.robot)
+            .as_deref()
+            .map(|r| r.sitemaps.clone())
+            .unwrap_or(Vec::new())
     }
     pub async fn get_cached_domain(&self, domain: &str) -> Option<CachedData> {
         self.cache.get(domain).await

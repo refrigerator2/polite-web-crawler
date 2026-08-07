@@ -1,10 +1,11 @@
 use crate::{
-    crawler_error::CrawlerError,
-    domain_rate_limiter::DomainRateLimiter,
-    html_parser::ParsedPage,
-    link_fetcher::LinkFetcher,
-    storage::crawler_storage::CrawlerStorage,
-    storage::db::{CrawlerDB, UrlAccess},
+    error::crawler_error::CrawlerError,
+    network::{domain_rate_limiter::DomainRateLimiter, link_fetcher::LinkFetcher},
+    parsers::{html_parser::ParsedPage, sitemaps_parser::SitemapsParser},
+    storage::{
+        crawler_storage::CrawlerStorage,
+        db::{CrawlerDB, UrlAccess},
+    },
 };
 use std::{
     sync::{
@@ -177,6 +178,19 @@ impl CrawlerCore {
                 Self::handle_unknown_domain(url, keywords, counter, drl, storage.clone()).await
             }
             UrlAccess::Allowed => {
+                let path = url.path().to_lowercase();
+                if path.ends_with(".xml") || path.ends_with(".xml.gz") {
+                    let domain = url.domain().ok_or(CrawlerError::UrlDoesntContainDomain())?;
+
+                    drl.await_acquiring(domain).await;
+
+                    let delay = storage.get_delay(domain).await?;
+                    let sitemaps_parser =
+                        SitemapsParser::new(vec![url.as_str().to_string()], delay.as_secs_f32());
+
+                    return Ok(sitemaps_parser.parse().await);
+                }
+
                 Self::handle_allowed_domain(url, keywords, counter, storage.clone()).await
             }
             UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
@@ -197,18 +211,26 @@ impl CrawlerCore {
             .await?;
         let delay = dom_data.delay;
         drl.update_delay(&dom_data.domain_string, Duration::from_secs_f32(delay));
-        let id = storage.save_domain(&dom_data).await?;
+        let sitemaps = storage.save_domain(&dom_data).await?;
+        let sitemaps_parser = SitemapsParser::new(sitemaps, delay);
+        let mut urls = sitemaps_parser.parse().await;
         match storage.check_if_url_allowed(url).await? {
             UrlAccess::Allowed => {
                 link_fetcher.delay = delay;
-                while !drl.try_acquire(&dom_data.domain_string) {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+
+                drl.await_acquiring(&dom_data.domain_string).await;
+                let res =
+                    Self::download_and_parse_page(link_fetcher, keywords, counter, storage.clone())
+                        .await;
+                match res {
+                    Ok(mut urls_vec) => {
+                        urls_vec.append(&mut urls);
+                        return Ok(urls_vec);
+                    }
+                    Err(e) => return Err(e),
                 }
-                Self::download_and_parse_page(link_fetcher, keywords, counter, storage.clone())
-                    .await
             }
-            UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
-            _ => Err(CrawlerError::UrlDoesntContainDomain()),
+            _ => Ok(urls),
         }
     }
 
