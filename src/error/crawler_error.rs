@@ -19,4 +19,6 @@ pub enum CrawlerError {
     UrlDoesntContainDomain(),
     #[error("No xml content inside")]
     NoXMLContent(),
+    #[error("Task queue error: {0}")]
+    TaskQueueError(#[from] redis::RedisError),
 }
