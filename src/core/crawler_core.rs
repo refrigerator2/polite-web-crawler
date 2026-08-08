@@ -6,6 +6,7 @@ use crate::{
         crawler_storage::CrawlerStorage,
         db::{CrawlerDB, UrlAccess},
     },
+    task_queue::{self, task_queue::TaskQueue},
 };
 use std::{
     sync::{
@@ -50,30 +51,26 @@ impl CrawlerCore {
     }
 
     pub async fn run(&self, start_url: Url) -> Result<(), CrawlerError> {
-        let (tx, rx) = mpsc::channel::<Url>(self.tokio_workers * 500);
-        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let task_queue = TaskQueue::new("redis://127.0.0.1:6379", "crawler_tasks", 5.0).await?;
 
         let storage = CrawlerStorage::new(self.db_name.as_str(), self.agent_name.clone()).await?;
 
-        tx.send(start_url.clone()).await.unwrap();
+        task_queue.push(start_url.as_str()).await?;
         self.active_tasks.store(1, Ordering::SeqCst);
         self.pages_crawled.store(0, Ordering::SeqCst);
         storage.insert_url_in_seen_urls(&start_url);
         let mut workers = vec![];
 
         for _ in 0..self.tokio_workers {
-            let rx_clone = Arc::clone(&rx);
-            let tx_clone = tx.clone();
             let keywords_clone = Arc::clone(&self.keywords);
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
             let drl = DomainRateLimiter::new(Duration::from_secs(1));
             let storage_clone = storage.clone();
-
+            let task_queue_clone = task_queue.clone();
             let handle = tokio::spawn(async move {
                 Self::worker_loop(
-                    rx_clone,
-                    tx_clone,
+                    task_queue_clone,
                     keywords_clone,
                     counter_clone,
                     active_tasks_clone,
@@ -102,8 +99,7 @@ impl CrawlerCore {
     }
 
     async fn worker_loop(
-        rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Url>>>,
-        tx: mpsc::Sender<Url>,
+        task_queue: TaskQueue,
         keywords: Arc<Option<Vec<String>>>,
         counter: Arc<AtomicUsize>,
         active_tasks: Arc<AtomicUsize>,
@@ -111,12 +107,10 @@ impl CrawlerCore {
         storage: CrawlerStorage,
     ) -> Result<(), CrawlerError> {
         loop {
-            let mut rx_guard = rx.lock().await;
-            let url = match rx_guard.recv().await {
+            let url = match task_queue.pop_front().await? {
                 Some(u) => u,
                 None => break,
             };
-            drop(rx_guard);
             let domain = match url.domain() {
                 Some(d) => d.to_string(),
                 None => {
@@ -127,7 +121,7 @@ impl CrawlerCore {
             };
 
             if !drl.try_acquire(&domain) {
-                if tx.try_send(url).is_err() {
+                if task_queue.push(url.as_str()).await.is_err() {
                     eprintln!("Failed to re-queue URL: channel full or closed");
                     active_tasks.fetch_sub(1, Ordering::SeqCst);
                 }
@@ -151,8 +145,8 @@ impl CrawlerCore {
 
                     for next_url in filtered_urls {
                         active_tasks.fetch_add(1, Ordering::SeqCst);
-                        if tx.try_send(next_url).is_err() {
-                            eprintln!("buffer overflow");
+                        if let Err(e) = task_queue.push(next_url.as_str()).await {
+                            eprintln!("buffer overflow: {}", e);
                             active_tasks.fetch_sub(1, Ordering::SeqCst);
                         }
                     }

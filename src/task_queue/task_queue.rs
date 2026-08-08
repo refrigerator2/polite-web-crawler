@@ -1,13 +1,15 @@
-use redis::{AsyncCommands, Connection, aio::ConnectionManager};
-
 use crate::error::crawler_error::CrawlerError;
+use redis::{AsyncCommands, aio::ConnectionManager};
+use url::Url;
 
 #[derive(Clone)]
 pub struct TaskQueue {
-    queue: ConnectionManager,
+    push_queue: ConnectionManager,
+    pop_queue: ConnectionManager,
     name: String,
     timeout_secs: f64,
 }
+
 impl TaskQueue {
     pub async fn new(
         redis_url: &str,
@@ -15,26 +17,37 @@ impl TaskQueue {
         timeout_secs: f64,
     ) -> Result<Self, redis::RedisError> {
         let client = redis::Client::open(redis_url)?;
-        let manager = ConnectionManager::new(client).await?;
+
+        let push_queue = ConnectionManager::new(client.clone()).await?;
+        let pop_queue = ConnectionManager::new(client).await?;
 
         Ok(Self {
-            queue: manager,
+            push_queue,
+            pop_queue,
             name: queue_name.to_string(),
             timeout_secs,
         })
     }
+
     pub async fn push(&self, url: &str) -> Result<(), CrawlerError> {
-        let mut queue_clone = self.queue.clone();
-        let _: () = queue_clone.rpush(&self.name, url).await?;
+        let mut conn = self.push_queue.clone();
+        let _: usize = conn.rpush(&self.name, url).await?;
         Ok(())
     }
-    pub async fn pop_front(&self) -> Result<Option<String>, CrawlerError> {
-        let mut queue_clone = self.queue.clone();
-        let line: Option<(String, String)> =
-            queue_clone.blpop(&self.name, self.timeout_secs).await?;
-        Ok(line.map(|tuple| tuple.1))
+
+    pub async fn pop_front(&self) -> Result<Option<Url>, CrawlerError> {
+        let mut conn = self.pop_queue.clone();
+        let line: Option<(String, String)> = conn.blpop(&self.name, self.timeout_secs).await?;
+
+        if let Some((_key, url_str)) = line {
+            let url = Url::parse(&url_str)?;
+            return Ok(Some(url));
+        }
+
+        Ok(None)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,35 +59,39 @@ mod tests {
         let random_queue_name = format!("test_queue_{}", Uuid::new_v4());
         TaskQueue::new(REDIS_TEST_URL, &random_queue_name, 0.1)
             .await
-            .expect("Coudnt connect to redis while testing")
+            .expect("Couldn't connect to redis while testing")
     }
 
     #[tokio::test]
     async fn test_push_and_pop_single_item() {
         let queue = setup_test_queue().await;
-        let test_url = "https://example.com/rust";
+        let test_url = Url::parse("https://example.com/rust").unwrap();
 
-        queue.push(test_url).await.expect("Error while pushing");
+        queue
+            .push(test_url.as_str())
+            .await
+            .expect("Error while pushing");
 
         let popped_url = queue.pop_front().await.expect("Error while popping");
 
-        assert_eq!(popped_url.expect("Mustnt be None"), test_url);
+        assert_eq!(popped_url.expect("Mustn't be None"), test_url);
     }
 
     #[tokio::test]
     async fn test_fifo_order() {
         let queue = setup_test_queue().await;
-        let url1 = "https://example.com/1";
-        let url2 = "https://example.com/2";
-        let url3 = "https://example.com/3";
+        let url1 = Url::parse("https://example.com/1").unwrap();
+        let url2 = Url::parse("https://example.com/2").unwrap();
+        let url3 = Url::parse("https://example.com/3").unwrap();
 
-        queue.push(url1).await.unwrap();
-        queue.push(url2).await.unwrap();
-        queue.push(url3).await.unwrap();
+        queue.push(url1.as_str()).await.unwrap();
+        queue.push(url2.as_str()).await.unwrap();
+        queue.push(url3.as_str()).await.unwrap();
 
-        assert_eq!(queue.pop_front().await.unwrap(), Some(url1.to_string()));
-        assert_eq!(queue.pop_front().await.unwrap(), Some(url2.to_string()));
-        assert_eq!(queue.pop_front().await.unwrap(), Some(url3.to_string()));
+        // Поправлены типы (сравниваем Url c Url, а не со String)
+        assert_eq!(queue.pop_front().await.unwrap(), Some(url1));
+        assert_eq!(queue.pop_front().await.unwrap(), Some(url2));
+        assert_eq!(queue.pop_front().await.unwrap(), Some(url3));
     }
 
     #[tokio::test]
