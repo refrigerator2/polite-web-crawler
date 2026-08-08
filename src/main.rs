@@ -20,6 +20,8 @@ pub struct Args {
     pub tokio_workers: Option<usize>,
     #[arg(short, long)]
     pub agent_name: Option<String>,
+    #[arg(short, long)]
+    pub limit: Option<u64>,
 }
 
 fn parse_url(url: &str) -> Result<Url, String> {
@@ -35,7 +37,8 @@ async fn main() -> Result<(), CrawlerError> {
     let db_name = format!("sqlite://{}.db/", db_name);
     let tw = args.tokio_workers.unwrap_or(TOKIO_WORKERS);
     let an = args.agent_name.unwrap_or(DEFAULT_AGENT_NAME.to_string());
-    let core = CrawlerCore::new(keywords, db_name, tw, an).await?;
+
+    let core = CrawlerCore::new(keywords, db_name, tw, an, args.limit).await?;
     core.run(url).await?;
     Ok(())
 }
