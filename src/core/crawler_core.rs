@@ -29,6 +29,7 @@ pub struct CrawlerCore {
     db_name: String,
     tokio_workers: usize,
     agent_name: String,
+    limit: Option<u64>,
     pages_crawled: Arc<AtomicUsize>,
     active_tasks: Arc<AtomicUsize>,
 }
@@ -39,12 +40,14 @@ impl CrawlerCore {
         db_name: String,
         tokio_workers: usize,
         agent_name: String,
+        limit: Option<u64>,
     ) -> Result<CrawlerCore, CrawlerError> {
         Ok(CrawlerCore {
             keywords,
             db_name,
             tokio_workers,
             agent_name,
+            limit,
             pages_crawled: Arc::new(AtomicUsize::new(0)),
             active_tasks: Arc::new(AtomicUsize::new(0)),
         })
@@ -82,8 +85,12 @@ impl CrawlerCore {
             workers.push(handle);
         }
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if self.active_tasks.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if self.active_tasks.load(Ordering::SeqCst) == 0
+                || self
+                    .limit
+                    .is_some_and(|l| l as usize <= self.pages_crawled.load(Ordering::SeqCst))
+            {
                 println!(
                     "Ended crawling, urls processed: {}",
                     self.pages_crawled.load(Ordering::SeqCst)
