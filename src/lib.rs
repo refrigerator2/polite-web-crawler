@@ -3,3 +3,4 @@ pub mod error;
 pub mod network;
 pub mod parsers;
 pub mod storage;
+pub mod task_queue;
