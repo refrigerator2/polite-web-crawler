@@ -141,20 +141,28 @@ impl CrawlerCore {
                 Ok(mut outbound_links) => {
                     outbound_links.sort();
                     outbound_links.dedup();
-                    let mut filtered_urls = Vec::new();
-
-                    for url in outbound_links {
-                        let is_in_list = storage.insert_url_in_seen_urls(&url);
-                        if !is_in_list {
-                            filtered_urls.push(url);
-                        }
+                    outbound_links.retain(|u| !storage.insert_url_in_seen_urls(u));
+                    let filtered_urls: Vec<String> =
+                        outbound_links.iter().map(|u| u.to_string()).collect();
+                    if filtered_urls.is_empty() {
+                        continue;
                     }
-
-                    for next_url in filtered_urls {
-                        active_tasks.fetch_add(1, Ordering::SeqCst);
-                        if let Err(e) = task_queue.push(next_url.as_str()).await {
-                            eprintln!("buffer overflow: {}", e);
-                            active_tasks.fetch_sub(1, Ordering::SeqCst);
+                    for i in 1..=3 {
+                        match task_queue.push_bulk(filtered_urls.as_slice()).await {
+                            Ok(added_count) => {
+                                active_tasks.fetch_add(added_count, Ordering::SeqCst);
+                                break;
+                            }
+                            Err(e) => {
+                                eprintln!("Error pushing bulk (attempt {}/3): {}", i, e);
+                                if i == 3 {
+                                    return Err(e);
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    200 * i as u64,
+                                ))
+                                .await;
+                            }
                         }
                     }
                 }

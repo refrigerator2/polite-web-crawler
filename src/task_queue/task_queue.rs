@@ -35,6 +35,14 @@ impl TaskQueue {
         Ok(())
     }
 
+    pub async fn push_bulk(&self, urls: &[String]) -> Result<usize, CrawlerError> {
+        if urls.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.push_queue.clone();
+        let _: usize = conn.rpush(&self.name, urls).await?;
+        Ok(urls.len())
+    }
     pub async fn pop_front(&self) -> Result<Option<Url>, CrawlerError> {
         let mut conn = self.pop_queue.clone();
         let line: Option<(String, String)> = conn.blpop(&self.name, self.timeout_secs).await?;
@@ -88,7 +96,6 @@ mod tests {
         queue.push(url2.as_str()).await.unwrap();
         queue.push(url3.as_str()).await.unwrap();
 
-        // Поправлены типы (сравниваем Url c Url, а не со String)
         assert_eq!(queue.pop_front().await.unwrap(), Some(url1));
         assert_eq!(queue.pop_front().await.unwrap(), Some(url2));
         assert_eq!(queue.pop_front().await.unwrap(), Some(url3));
@@ -130,5 +137,47 @@ mod tests {
         }
 
         assert_eq!(count, num_workers * items_per_worker);
+    }
+    #[tokio::test]
+    async fn test_push_bulk() {
+        let queue = setup_test_queue().await;
+
+        let urls_to_push = vec![
+            "https://example.com/bulk/1".to_string(),
+            "https://example.com/bulk/2".to_string(),
+            "https://example.com/bulk/3".to_string(),
+        ];
+
+        let inserted_count = queue
+            .push_bulk(&urls_to_push)
+            .await
+            .expect("Error while pushing bulk");
+
+        assert_eq!(inserted_count, 3);
+
+        for expected_str in &urls_to_push {
+            let expected_url = Url::parse(expected_str).unwrap();
+            let popped = queue.pop_front().await.expect("Error while popping");
+
+            assert_eq!(popped, Some(expected_url));
+        }
+
+        assert_eq!(queue.pop_front().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_push_bulk_empty() {
+        let queue = setup_test_queue().await;
+
+        let empty_list: Vec<String> = vec![];
+
+        let inserted_count = queue
+            .push_bulk(&empty_list)
+            .await
+            .expect("Should handle empty bulk gracefully");
+
+        assert_eq!(inserted_count, 0);
+
+        assert_eq!(queue.pop_front().await.unwrap(), None);
     }
 }
