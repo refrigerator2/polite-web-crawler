@@ -1,0 +1,36 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+moka = { version = "0.12.15", features = ["future"] }
+scraper = "0.27.0"
+sqlx = { version = "0.9.0", features = [
+  "sqlite",
+  "runtime-tokio",
+  "tls-rustls",
+] }
+reqwest = { version = "0.13", features = [
+  "json",
+  "blocking",
+  "stream",
+  "gzip",
+] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+url = "2.5.8"
+thiserror = "2.0"
+texting_robots = "0.2.2"
+anyhow = "1.0.103"
+dashmap = "6.2.1"
+fastbloom = "0.17.0"
+quick-xml = "0.41.0"
+wiremock = "0.6.5"
+simhash = "0.3.0"
+redis = { version = "1.5.0", features = [
+  "aio",
+  "connection-manager",
+  "tokio-comp",
+] }
+uuid = "1.24.0"
