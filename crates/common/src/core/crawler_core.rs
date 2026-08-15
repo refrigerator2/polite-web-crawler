@@ -267,9 +267,9 @@ impl CrawlerCore {
 
         let raw_html_data = link_fetcher.get_page().await?;
 
-        let parsed_page = ParsedPage::parse(raw_html_data, Arc::clone(keywords));
+        let (keywords_in_it, parsed_page) = ParsedPage::parse(raw_html_data, Arc::clone(keywords));
 
-        if parsed_page.keywords_in_it {
+        if keywords_in_it {
             Self::save_results_to_db(&url_copy, &parsed_page, counter, storage.clone()).await?;
         }
         Ok(parsed_page.outbound_links)

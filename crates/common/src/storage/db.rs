@@ -306,7 +306,7 @@ mod tests {
         );
         let dom_id = db.save_domain(&dom).await?;
 
-        let page = ParsedPage::parse(
+        let (_, page) = ParsedPage::parse(
             NotParsedPageData {
                 content: "<h1>CR7</h1>".to_string(),
                 url: Url::parse("https://www.ronaldo.com").map_err(CrawlerError::InvalidUrl)?,

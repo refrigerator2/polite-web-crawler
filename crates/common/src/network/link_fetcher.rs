@@ -1,4 +1,5 @@
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT};
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,7 @@ pub struct NotParsedPageData {
     pub content: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DomainData {
     pub domain_string: String,
     pub robots: Option<Arc<String>>,
