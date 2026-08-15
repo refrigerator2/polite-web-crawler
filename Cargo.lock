@@ -365,6 +365,7 @@ dependencies = [
  "redis",
  "reqwest",
  "scraper",
+ "serde",
  "simhash",
  "sqlx",
  "texting_robots",
