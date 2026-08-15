@@ -21,4 +21,6 @@ pub enum CrawlerError {
     NoXMLContent(),
     #[error("Task queue error: {0}")]
     TaskQueueError(#[from] redis::RedisError),
+    #[error("JoinError: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
 }

@@ -1,4 +1,4 @@
 [package]
-name = "crawler-storage"
+name = "crawler-worker"
 version = "0.1.0"
 edition = "2024"
