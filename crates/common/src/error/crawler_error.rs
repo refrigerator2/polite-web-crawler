@@ -23,4 +23,6 @@ pub enum CrawlerError {
     TaskQueueError(#[from] redis::RedisError),
     #[error("JoinError: {0}")]
     JoinError(#[from] tokio::task::JoinError),
+    #[error("Serde error: {0}")]
+    SerdeError(#[from] serde_json::Error),
 }

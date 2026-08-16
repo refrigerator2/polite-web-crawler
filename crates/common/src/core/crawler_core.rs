@@ -18,6 +18,8 @@ use std::{
 use tokio::sync::mpsc;
 use url::Url;
 
+pub const CRAWLER_TASK_QUEUE_NAME: &str = "crawler_tasks";
+
 pub struct TaskGuard(Arc<AtomicUsize>);
 impl Drop for TaskGuard {
     fn drop(&mut self) {
@@ -54,7 +56,8 @@ impl CrawlerCore {
     }
 
     pub async fn run(&self, start_url: Url) -> Result<(), CrawlerError> {
-        let task_queue = TaskQueue::new("redis://127.0.0.1:6379", "crawler_tasks", 5.0).await?;
+        let task_queue =
+            TaskQueue::new("redis://127.0.0.1:6379", CRAWLER_TASK_QUEUE_NAME, 5.0).await?;
 
         let storage = CrawlerStorage::new(self.db_name.as_str(), self.agent_name.clone()).await?;
 

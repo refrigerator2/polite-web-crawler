@@ -1,6 +1,6 @@
 use crate::{network::link_fetcher::DomainData, parsers::html_parser::ParsedPage};
 use serde::{Deserialize, Serialize};
-
+use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 pub struct ParsedPageSaveData {
     pub title: Option<String>,
@@ -23,7 +23,7 @@ impl ParsedPageSaveData {
 #[derive(Serialize, Deserialize)]
 pub struct DomainDataSaveData {
     pub domain_string: String,
-    pub robots: Option<String>,
+    pub robots: Option<Arc<String>>,
     pub delay: f32,
 }
 
@@ -31,7 +31,7 @@ impl DomainDataSaveData {
     pub fn from_domain_data(data: &DomainData) -> Self {
         Self {
             domain_string: data.domain_string.clone(),
-            robots: data.robots.as_ref().map(|arc| arc.as_str().to_string()),
+            robots: data.robots.clone(),
             delay: data.delay,
         }
     }

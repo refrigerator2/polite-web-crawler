@@ -5,12 +5,12 @@ use crate::storage::seen_urls::{self, SeenUrls};
 use common::error::crawler_error::CrawlerError;
 use common::network::link_fetcher::DomainData;
 use common::parsers::html_parser::ParsedPage;
+use common::parsers::parsed_data::{DomainDataSaveData, ParsedData, ParsedPageSaveData};
 use common::storage::domain_cache::CachedData;
+use std::path::Path;
 use std::{sync::Arc, time::Duration};
 use texting_robots::Robot;
 use url::Url;
-
-use std::path::Path;
 #[derive(Clone)]
 
 pub struct CrawlerStorage {
@@ -37,6 +37,28 @@ impl CrawlerStorage {
             agent_name: user_agent,
             dedup: ContentDeduplicator::init(hashes, 3),
         })
+    }
+    pub async fn save_parsed_data(&self, data: ParsedData) -> Result<Vec<String>, CrawlerError> {
+        match data {
+            ParsedData::ParsedPage(pp) => {
+                let host = Url::parse(&pp.url).unwrap();
+
+                let host = host
+                    .domain()
+                    .ok_or(CrawlerError::UrlDoesntContainDomain())?;
+
+                let id = self
+                    .get_domain_id(host)
+                    .await?
+                    .ok_or_else(|| CrawlerError::UrlDoesntContainDomain())?;
+                self.save_parsed_page(id, &pp).await?;
+                Ok(vec![])
+            }
+            ParsedData::ParsedDomain(dd) => {
+                let res = self.save_domain(&dd).await?;
+                Ok(res)
+            }
+        }
     }
     pub async fn get_domain_id(&self, domain: &str) -> Result<Option<i64>, CrawlerError> {
         let dom_id = match self.domain_cache.get_domain_id(domain).await {
@@ -92,10 +114,10 @@ impl CrawlerStorage {
     pub fn insert_url_in_seen_urls(&self, url: &Url) -> bool {
         self.seen_urls.insert_url(url)
     }
-    pub async fn save_parsed_page(
+    async fn save_parsed_page(
         &self,
         dom_id: i64,
-        page: &ParsedPage,
+        page: &ParsedPageSaveData,
     ) -> Result<(), CrawlerError> {
         if let Some(txt) = page.clean_text.clone() {
             if !self.dedup.is_duplicate(&txt) {
@@ -107,7 +129,10 @@ impl CrawlerStorage {
         }
         Ok(())
     }
-    pub async fn save_domain(&self, domain_data: &DomainData) -> Result<Vec<String>, CrawlerError> {
+    async fn save_domain(
+        &self,
+        domain_data: &DomainDataSaveData,
+    ) -> Result<Vec<String>, CrawlerError> {
         let id = self.db.save_domain(domain_data).await?;
         self.domain_cache
             .add_domain(
