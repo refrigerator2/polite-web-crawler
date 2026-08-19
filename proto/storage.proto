@@ -1,0 +1,32 @@
+syntax = "proto3";
+package storage;
+
+service StorageService {
+  rpc CheckUrlAllowed (CheckUrlRequest) returns (CheckUrlResponse);
+  rpc GetDelay (GetDelayRequest) returns (GetDelayResponse);
+  rpc InsertUrl (InsertUrlRequest) returns (InsertUrlResponse);
+}
+
+message CheckUrlRequest {
+  string url = 1;
+}
+
+message CheckUrlResponse {
+  string access = 1;
+}
+
+message GetDelayRequest {
+  string domain = 1;
+}
+
+message GetDelayResponse {
+  float delay_secs = 1;
+}
+
+message InsertUrlRequest {
+  string url = 1;
+}
+
+message InsertUrlResponse {
+  bool is_duplicate = 1;
+}

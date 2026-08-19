@@ -1,12 +1,16 @@
-use crate::storage::content_deduplicator::ContentDeduplicator;
-use crate::storage::db::{CrawlerDB, UrlAccess};
-use crate::storage::domain_cache::DomainCache;
-use crate::storage::seen_urls::{self, SeenUrls};
-use common::error::crawler_error::CrawlerError;
-use common::network::link_fetcher::DomainData;
-use common::parsers::html_parser::ParsedPage;
-use common::parsers::parsed_data::{DomainDataSaveData, ParsedData, ParsedPageSaveData};
-use common::storage::domain_cache::CachedData;
+use crate::storage::{
+    content_deduplicator::ContentDeduplicator, db::CrawlerDB, domain_cache::DomainCache,
+    seen_urls::SeenUrls,
+};
+use common::{
+    error::crawler_error::CrawlerError,
+    network::link_fetcher::DomainData,
+    parsers::{
+        html_parser::ParsedPage,
+        parsed_data::{DomainDataSaveData, ParsedData, ParsedPageSaveData},
+    },
+    storage::{db::UrlAccess, domain_cache::CachedData},
+};
 use std::path::Path;
 use std::{sync::Arc, time::Duration};
 use texting_robots::Robot;

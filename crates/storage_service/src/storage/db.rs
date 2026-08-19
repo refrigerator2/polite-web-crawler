@@ -16,14 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 const MAX_DB_RECONNECTS: usize = 3;
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum UrlAccess {
-    Allowed,
-    Disallowed,
-    UnknownDomain,
-    URLWithoutHost,
-}
-
 #[derive(Clone)]
 pub struct CrawlerDB {
     pool: SqlitePool,
