@@ -1,12 +1,10 @@
 use crate::{
-    error::crawler_error::CrawlerError,
     network::{domain_rate_limiter::DomainRateLimiter, link_fetcher::LinkFetcher},
     parsers::{html_parser::ParsedPage, sitemaps_parser::SitemapsParser},
-    storage::{
-        crawler_storage::CrawlerStorage,
-        db::{CrawlerDB, UrlAccess},
-    },
-    task_queue::{self, task_queue::TaskQueue},
+};
+use common::{
+    CRAWLER_TASK_QUEUE_NAME, error::crawler_error::CrawlerError, network::url_info::UrlAccess,
+    task_queue::task_queue::TaskQueue,
 };
 use std::{
     sync::{
@@ -17,8 +15,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 use url::Url;
-
-pub const CRAWLER_TASK_QUEUE_NAME: &str = "crawler_tasks";
 
 pub struct TaskGuard(Arc<AtomicUsize>);
 impl Drop for TaskGuard {

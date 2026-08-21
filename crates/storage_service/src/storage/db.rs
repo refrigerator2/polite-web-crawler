@@ -1,11 +1,8 @@
+use crate::storage::domain_cache::CachedData;
 use common::{
     error::crawler_error::CrawlerError,
-    network::link_fetcher::DomainData,
-    parsers::{
-        html_parser::ParsedPage,
-        parsed_data::{DomainDataSaveData, ParsedPageSaveData},
-    },
-    storage::domain_cache::CachedData,
+    network::url_info::DomainData,
+    parsers::parsed_data::{DomainDataSaveData, ParsedPageSaveData},
 };
 use sqlx::{
     Row, SqlitePool,
@@ -223,10 +220,8 @@ impl CrawlerDB {
 mod tests {
     use super::*;
     use crate::storage::content_deduplicator::{self, ContentDeduplicator};
-    use common::network::link_fetcher::NotParsedPageData;
     use std::sync::Arc;
     use std::time::Duration;
-    use url::Url;
 
     fn create_domain(
         domain_string: String,
@@ -302,24 +297,17 @@ mod tests {
         );
         let dom_id = db.save_domain(&dom).await?;
 
-        let (_, page) = ParsedPage::parse(
-            NotParsedPageData {
-                content: "<h1>CR7</h1>".to_string(),
-                url: Url::parse("https://www.ronaldo.com").map_err(CrawlerError::InvalidUrl)?,
-            },
-            Arc::default(),
-        );
+        let page = ParsedPageSaveData {
+            title: Some("CR7".to_string()),
+            description: None,
+            clean_text: Some("CR7".to_string()),
+            url: "https://www.ronaldo.com".to_string(),
+        };
 
         let hash = ContentDeduplicator::init(Vec::new(), 3);
         let h = hash.insert(&page.clean_text.clone().unwrap());
 
-        let res = db
-            .save_parsed_page(
-                dom_id,
-                &ParsedPageSaveData::convert_parsed_page(&page),
-                Some(h),
-            )
-            .await;
+        let res = db.save_parsed_page(dom_id, &page, Some(h)).await;
         assert!(res.is_ok());
 
         Ok(())

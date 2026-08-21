@@ -1,4 +1,4 @@
-use crate::{network::link_fetcher::DomainData, parsers::html_parser::ParsedPage};
+use crate::network::url_info::DomainData;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
@@ -7,17 +7,6 @@ pub struct ParsedPageSaveData {
     pub description: Option<String>,
     pub clean_text: Option<String>,
     pub url: String,
-}
-
-impl ParsedPageSaveData {
-    pub fn convert_parsed_page(page: &ParsedPage) -> Self {
-        Self {
-            title: page.title.clone(),
-            description: page.description.clone(),
-            clean_text: page.clean_text.clone(),
-            url: page.url.to_string(),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]

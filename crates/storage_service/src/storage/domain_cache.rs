@@ -1,10 +1,35 @@
+use common::error::crawler_error::CrawlerError;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
 use texting_robots::Robot;
 
-use common::{error::crawler_error::CrawlerError, storage::domain_cache::CachedData};
-
+#[derive(Clone, Debug)]
+pub struct CachedData {
+    pub id: i64,
+    pub robot: Option<Arc<Robot>>,
+    pub delay: Duration,
+}
+impl CachedData {
+    pub fn new(
+        id: i64,
+        robot: Option<Arc<String>>,
+        delay: f32,
+        agent: &str,
+    ) -> Result<CachedData, CrawlerError> {
+        let robot = if let Some(r) = robot {
+            let robot_matcher = Robot::new(agent, r.as_bytes())?;
+            Some(Arc::new(robot_matcher))
+        } else {
+            None
+        };
+        Ok(CachedData {
+            id,
+            robot,
+            delay: Duration::from_secs_f32(delay),
+        })
+    }
+}
 #[derive(Clone)]
 pub struct DomainCache {
     cache: Cache<String, CachedData>,

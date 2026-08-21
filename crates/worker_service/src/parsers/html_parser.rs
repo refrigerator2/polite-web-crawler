@@ -1,4 +1,5 @@
-use crate::network::link_fetcher::NotParsedPageData;
+use crate::network::url_info::NotParsedPageData;
+use common::parsers::parsed_data::ParsedPageSaveData;
 use scraper::{Html, Selector};
 use serde::Serialize;
 use std::sync::Arc;
@@ -255,5 +256,14 @@ mod tests {
         assert_eq!(parsed.clean_text.as_deref(), Some("Broken HTML"));
         //let expected_url = Url::parse("https://broken.com").unwrap();
         //assert!(parsed.outbound_links.contains(&expected_url));
+    }
+}
+
+pub fn convert_parsed_page_to_save_data(page: &ParsedPage) -> ParsedPageSaveData {
+    ParsedPageSaveData {
+        title: page.title.clone(),
+        description: page.description.clone(),
+        clean_text: page.clean_text.clone(),
+        url: page.url.to_string(),
     }
 }

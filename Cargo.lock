@@ -568,11 +568,9 @@ dependencies = [
  "clap",
  "dashmap",
  "fastbloom",
- "moka",
  "quick-xml",
  "redis",
  "reqwest",
- "scraper",
  "serde",
  "serde_json",
  "simhash",
@@ -682,6 +680,27 @@ dependencies = [
 [[package]]
 name = "crawler-worker"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "common",
+ "dashmap",
+ "fastbloom",
+ "quick-xml",
+ "redis",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "simhash",
+ "sqlx",
+ "texting_robots",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "crc"
@@ -4201,9 +4220,9 @@ dependencies = [
 
 [[package]]
 name = "web_atoms"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "075474b12bcb3d2e3d4546580e9de478eeeead668a1761e2a8860c836b7ef297"
+checksum = "ba8b815c1b593dc0baf78dd0f4fc8fdb2de53198fb1163738093e9a311c33fb3"
 dependencies = [
  "phf",
  "phf_codegen",

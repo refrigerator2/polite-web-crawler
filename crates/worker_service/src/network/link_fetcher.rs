@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
-use crate::error::crawler_error::CrawlerError;
+use common::error::crawler_error::CrawlerError;
 
 const ATTEMPTS: i32 = 3;
 const DURATION: Duration = Duration::from_secs(1);

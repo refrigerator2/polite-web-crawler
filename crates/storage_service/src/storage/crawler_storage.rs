@@ -1,22 +1,18 @@
 use crate::storage::{
-    content_deduplicator::ContentDeduplicator, db::CrawlerDB, domain_cache::DomainCache,
-    seen_urls::SeenUrls,
+    content_deduplicator::ContentDeduplicator, db::CrawlerDB, domain_cache::CachedData,
+    domain_cache::DomainCache, seen_urls::SeenUrls,
 };
 use common::{
     error::crawler_error::CrawlerError,
-    network::link_fetcher::DomainData,
-    parsers::{
-        html_parser::ParsedPage,
-        parsed_data::{DomainDataSaveData, ParsedData, ParsedPageSaveData},
-    },
-    storage::{db::UrlAccess, domain_cache::CachedData},
+    network::url_info::{DomainData, UrlAccess},
+    parsers::parsed_data::{DomainDataSaveData, ParsedData, ParsedPageSaveData},
 };
 use std::path::Path;
 use std::{sync::Arc, time::Duration};
 use texting_robots::Robot;
 use url::Url;
-#[derive(Clone)]
 
+#[derive(Clone)]
 pub struct CrawlerStorage {
     seen_urls: SeenUrls,
     db: CrawlerDB,

@@ -1,6 +1,6 @@
 use crate::storage::crawler_storage::CrawlerStorage;
 use crate::storage_proto;
-use common::storage::db::UrlAccess;
+use common::network::link_fetcher::UrlAccess;
 use std::sync::Arc;
 use storage_proto::storage_service_server::{StorageService, StorageServiceServer};
 use storage_proto::{
@@ -9,7 +9,6 @@ use storage_proto::{
 };
 use tonic::{Request, Response, Status};
 use url::Url;
-
 pub struct StorageGrpcService {
     storage: CrawlerStorage,
 }

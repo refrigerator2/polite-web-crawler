@@ -1,5 +1,5 @@
 pub mod storage;
-use common::core::crawler_core::CRAWLER_TASK_QUEUE_NAME;
+use common::CRAWLER_TASK_QUEUE_NAME;
 use common::error::crawler_error::CrawlerError;
 use common::parsers::parsed_data::ParsedData;
 use common::task_queue;
