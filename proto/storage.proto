@@ -1,0 +1,37 @@
+syntax = "proto3";
+package storage;
+
+service StorageService {
+  rpc CheckUrlAllowed (CheckUrlRequest) returns (CheckUrlResponse);
+  rpc GetDelay (GetDelayRequest) returns (GetDelayResponse);
+  rpc InsertUrl (InsertUrlRequest) returns (InsertUrlResponse);
+}
+enum UrlAccess {
+  ALLOWED = 0;
+  DISALLOWED = 1;
+  UNKNOWN_DOMAIN = 2;
+  URL_WITHOUT_HOST = 3;
+}
+message CheckUrlRequest {
+  string url = 1;
+}
+
+message CheckUrlResponse {
+  UrlAccess access = 1;
+}
+
+message GetDelayRequest {
+  string domain = 1;
+}
+
+message GetDelayResponse {
+  float delay_secs = 1;
+}
+
+message InsertUrlRequest {
+  string url = 1;
+}
+
+message InsertUrlResponse {
+  bool is_duplicate = 1;
+}

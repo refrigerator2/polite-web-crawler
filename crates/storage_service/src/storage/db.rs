@@ -1,6 +1,8 @@
-use crate::{
-    error::crawler_error::CrawlerError, network::link_fetcher::DomainData,
-    parsers::html_parser::ParsedPage, storage::domain_cache::CachedData,
+use crate::storage::domain_cache::CachedData;
+use common::{
+    error::crawler_error::CrawlerError,
+    network::url_info::DomainData,
+    parsers::parsed_data::{DomainDataSaveData, ParsedPageSaveData},
 };
 use sqlx::{
     Row, SqlitePool,
@@ -10,14 +12,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 const MAX_DB_RECONNECTS: usize = 3;
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum UrlAccess {
-    Allowed,
-    Disallowed,
-    UnknownDomain,
-    URLWithoutHost,
-}
 
 #[derive(Clone)]
 pub struct CrawlerDB {
@@ -71,7 +65,7 @@ impl CrawlerDB {
     pub async fn save_parsed_page(
         &self,
         dom_id: i64,
-        page: &ParsedPage,
+        page: &ParsedPageSaveData,
         hash: Option<u64>,
     ) -> Result<(), CrawlerError> {
         let hash_i64 = hash.map(|h| h as i64);
@@ -111,10 +105,10 @@ impl CrawlerDB {
         Err(CrawlerError::DbError(sqlx::Error::RowNotFound))
     }
 
-    pub async fn save_domain(&self, domain_data: &DomainData) -> Result<i64, CrawlerError> {
+    pub async fn save_domain(&self, domain_data: &DomainDataSaveData) -> Result<i64, CrawlerError> {
         let mut backoff = Duration::from_secs(1);
 
-        let robots_str = domain_data.robots.as_deref().map(|s| s.as_str());
+        let robots_str = domain_data.robots.as_deref();
 
         for i in 0..MAX_DB_RECONNECTS {
             let res: Result<i64, sqlx::Error> = sqlx::query_scalar(
@@ -225,14 +219,16 @@ impl CrawlerDB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::link_fetcher::NotParsedPageData;
     use crate::storage::content_deduplicator::{self, ContentDeduplicator};
     use std::sync::Arc;
     use std::time::Duration;
-    use url::Url;
 
-    fn create_domain(domain_string: String, delay: f32, robots: Option<Arc<String>>) -> DomainData {
-        DomainData {
+    fn create_domain(
+        domain_string: String,
+        delay: f32,
+        robots: Option<Arc<String>>,
+    ) -> DomainDataSaveData {
+        DomainDataSaveData {
             domain_string,
             robots,
             delay,
@@ -250,7 +246,6 @@ mod tests {
         let db = CrawlerDB::new("sqlite::memory:").await?;
 
         let robots_content = Arc::new("User-agent: * Disallow: /admin".to_string());
-
         let dom1 = create_domain(
             "test1.com".to_string(),
             4.2,
@@ -265,21 +260,17 @@ mod tests {
             .get_cache_info_about_domain("test1.com", "ronaldo")
             .await?
             .expect("Domain should be in db");
-
         assert_eq!(cache_info1.id, id1);
-
         assert_eq!(
             cache_info1.delay.as_millis(),
             Duration::from_secs_f32(4.2).as_millis()
         );
-
         assert!(cache_info1.robot.is_some());
 
         let cache_info2 = db
             .get_cache_info_about_domain("test2.com", "ronaldo")
             .await?
             .expect("Second domain should be in db");
-
         assert_eq!(cache_info2.id, id2);
         assert_eq!(
             cache_info2.delay.as_millis(),
@@ -306,15 +297,16 @@ mod tests {
         );
         let dom_id = db.save_domain(&dom).await?;
 
-        let page = ParsedPage::parse(
-            NotParsedPageData {
-                content: "<h1>CR7</h1>".to_string(),
-                url: Url::parse("https://www.ronaldo.com").map_err(CrawlerError::InvalidUrl)?,
-            },
-            Arc::default(),
-        );
+        let page = ParsedPageSaveData {
+            title: Some("CR7".to_string()),
+            description: None,
+            clean_text: Some("CR7".to_string()),
+            url: "https://www.ronaldo.com".to_string(),
+        };
+
         let hash = ContentDeduplicator::init(Vec::new(), 3);
         let h = hash.insert(&page.clean_text.clone().unwrap());
+
         let res = db.save_parsed_page(dom_id, &page, Some(h)).await;
         assert!(res.is_ok());
 
