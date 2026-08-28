@@ -1,7 +1,7 @@
 use crate::network::url_info::DomainData;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ParsedPageSaveData {
     pub title: Option<String>,
     pub description: Option<String>,
@@ -9,7 +9,7 @@ pub struct ParsedPageSaveData {
     pub url: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct DomainDataSaveData {
     pub domain_string: String,
     pub robots: Option<Arc<String>>,
@@ -26,7 +26,7 @@ impl DomainDataSaveData {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "event_type")]
 pub enum ParsedData {
     ParsedDomain(DomainDataSaveData),

@@ -26,9 +26,14 @@ simhash = "0.3.0"
 url = "2.5.8"
 texting_robots = "0.2.2"
 tonic-prost = "0.14.6"
+dotenvy = "0.15.7"
+tokio-util = "0.7.19"
 [build-dependencies]
+protoc-bin-vendored = "3"
 tonic-prost-build = "0.14.6"
+protobuf-src = "2.1.1+27.1"
 [dev-dependencies]
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["redis"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+protoc-bin-vendored = "3"

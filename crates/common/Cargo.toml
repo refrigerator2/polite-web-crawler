@@ -30,3 +30,4 @@ redis = { version = "1.5.0", features = [
 ] }
 uuid = "1.24.0"
 serde = { version = "1.0.229", features = ["rc"] }
+tonic = "0.14.6"

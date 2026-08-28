@@ -1,12 +1,13 @@
-use crate::core::crawler_core::CrawlerCore;
 use clap::Parser;
 use common::error::crawler_error::CrawlerError;
+use common::{DEFAULT_AGENT_NAME, wait_for_shutdown_signal};
+use crawler_worker::core::crawler_core::CrawlerCore;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const TOKIO_WORKERS: usize = 128;
 const DEFAULT_DB_NAME: &str = "crawler";
-const DEFAULT_AGENT_NAME: &str = "Aah";
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -30,6 +31,7 @@ fn parse_url(url: &str) -> Result<Url, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), CrawlerError> {
+    dotenvy::from_path("../../../.env").ok();
     let args = Args::parse();
     let url = args.url;
     let keywords = Arc::new(args.keywords);
@@ -39,6 +41,13 @@ async fn main() -> Result<(), CrawlerError> {
     let an = args.agent_name.unwrap_or(DEFAULT_AGENT_NAME.to_string());
 
     let core = CrawlerCore::new(keywords, db_name, tw, an, args.limit).await?;
-    core.run(url).await?;
+    let shutdown = CancellationToken::new();
+    let shutdown_clone = shutdown.clone();
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        shutdown_clone.cancel();
+        println!("Shutdown signal captured");
+    });
+    core.run(url, shutdown).await?;
     Ok(())
 }

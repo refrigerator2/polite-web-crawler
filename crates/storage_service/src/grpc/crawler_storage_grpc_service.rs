@@ -1,7 +1,8 @@
 use crate::storage::crawler_storage::CrawlerStorage;
 use crate::storage_proto;
-use common::network::link_fetcher::UrlAccess;
-use std::sync::Arc;
+use common::error::crawler_error::CrawlerError;
+use common::network::url_info::UrlAccess as DefaultUrlAccess;
+use storage_proto::UrlAccess as ProtoUrlAccess;
 use storage_proto::storage_service_server::{StorageService, StorageServiceServer};
 use storage_proto::{
     CheckUrlRequest, CheckUrlResponse, GetDelayRequest, GetDelayResponse, InsertUrlRequest,
@@ -9,6 +10,26 @@ use storage_proto::{
 };
 use tonic::{Request, Response, Status};
 use url::Url;
+impl From<ProtoUrlAccess> for DefaultUrlAccess {
+    fn from(access: ProtoUrlAccess) -> Self {
+        match access {
+            ProtoUrlAccess::Allowed => DefaultUrlAccess::Allowed,
+            ProtoUrlAccess::Disallowed => DefaultUrlAccess::Disallowed,
+            ProtoUrlAccess::UnknownDomain => DefaultUrlAccess::UnknownDomain,
+            ProtoUrlAccess::UrlWithoutHost => DefaultUrlAccess::URLWithoutHost,
+        }
+    }
+}
+impl From<DefaultUrlAccess> for ProtoUrlAccess {
+    fn from(access: DefaultUrlAccess) -> Self {
+        match access {
+            DefaultUrlAccess::Allowed => ProtoUrlAccess::Allowed,
+            DefaultUrlAccess::Disallowed => ProtoUrlAccess::Disallowed,
+            DefaultUrlAccess::UnknownDomain => ProtoUrlAccess::UnknownDomain,
+            DefaultUrlAccess::URLWithoutHost => ProtoUrlAccess::UrlWithoutHost,
+        }
+    }
+}
 pub struct StorageGrpcService {
     storage: CrawlerStorage,
 }
@@ -34,15 +55,10 @@ impl StorageService for StorageGrpcService {
             .await
             .map_err(|e| Status::internal(format!("{:?}", e)))?;
 
-        let access_str = match access {
-            UrlAccess::Allowed => "allowed",
-            UrlAccess::Disallowed => "disallowed",
-            UrlAccess::UnknownDomain => "unknown_domain",
-            UrlAccess::URLWithoutHost => "no_host",
-        };
+        let proto_access: ProtoUrlAccess = access.into();
 
         Ok(Response::new(CheckUrlResponse {
-            access: access_str.to_string(),
+            access: proto_access as i32,
         }))
     }
     async fn get_delay(

@@ -1,42 +1,68 @@
+pub mod grpc;
 pub mod storage;
-use common::CRAWLER_TASK_QUEUE_NAME;
+use crate::storage_proto::storage_service_server::StorageServiceServer;
 use common::error::crawler_error::CrawlerError;
 use common::parsers::parsed_data::ParsedData;
-use common::task_queue;
 use common::task_queue::task_queue::TaskQueue;
+use common::wait_for_shutdown_signal;
+use common::{CRAWLER_TASK_QUEUE_NAME, STREAM_NAME};
+use grpc::crawler_storage_grpc_service::StorageGrpcService;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManagerConfig;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis::{self, aio::ConnectionManager};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::Duration;
 use storage::crawler_storage::CrawlerStorage;
-use storage::crawler_storage_grpc_service::StorageGrpcService;
-use storage_proto::storage_service_server::StorageServiceServer;
+use tokio_util::sync::CancellationToken;
+use tonic::transport::Server;
 use url::Url;
 
 pub mod storage_proto {
     tonic::include_proto!("storage");
 }
-const STREAM_NAME: &str = "crawler_events";
 const GROUP_NAME: &str = "storage_workers";
 const CONSUMER_NAME: &str = "storage_consumer_1";
 
 #[tokio::main]
 async fn main() -> Result<(), CrawlerError> {
+    dotenvy::from_path("../../../.env").ok();
+    let redis_addr =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+
     let storage = CrawlerStorage::new("crawler.db", "MyBot/1.0".to_string()).await?;
-    let client = redis::Client::open("redis://127.0.0.1:6379/")?;
-    let manager = ConnectionManager::new(client).await?;
-    let task_queue = TaskQueue::new("redis://127.0.0.1:6379", CRAWLER_TASK_QUEUE_NAME, 5.0).await?;
-    let mut stream_manager = manager.clone();
+    let client = redis::Client::open(redis_addr.clone())?;
+    let shutdown = CancellationToken::new();
+
+    let manager_config =
+        ConnectionManagerConfig::new().set_response_timeout(Some(Duration::from_secs(10)));
+
+    let manager = ConnectionManager::new_with_config(client, manager_config).await?;
+
+    let task_queue = TaskQueue::new(&redis_addr, CRAWLER_TASK_QUEUE_NAME, 10.0).await?;
+    let stream_manager = manager.clone();
+
     let storage_writer = storage.clone();
+    let redis_shutdown = shutdown.clone();
     let stream_consumer_task = tokio::spawn(async move {
-        run_redis_stream_consumer(stream_manager, storage_writer, task_queue).await;
+        run_redis_stream_consumer(stream_manager, storage_writer, task_queue, redis_shutdown).await;
     });
+
     let storage_reader = storage.clone();
+    let grpc_listen_addr =
+        std::env::var("STORAGE_LISTEN_ADDR").unwrap_or("0.0.0.0:50051".to_string());
+    let grpc_shutdown = shutdown.clone();
     let grpc_server_task = tokio::spawn(async move {
-        run_grpc_server("[::1]:50051".parse().unwrap(), storage_reader).await;
+        run_grpc_server(
+            grpc_listen_addr.parse().expect("invalid gRPC address"),
+            storage_reader,
+            grpc_shutdown,
+        )
+        .await;
     });
+
+    wait_for_shutdown_signal().await;
+    println!("Shutdown signal received");
+    shutdown.cancel();
     let _ = tokio::try_join!(stream_consumer_task, grpc_server_task)?;
 
     Ok(())
@@ -46,6 +72,7 @@ async fn run_redis_stream_consumer(
     mut conn: ConnectionManager,
     storage: CrawlerStorage,
     tq: TaskQueue,
+    shutdown: CancellationToken,
 ) {
     let create_result: redis::RedisResult<()> = conn
         .xgroup_create_mkstream(STREAM_NAME, GROUP_NAME, "$")
@@ -60,63 +87,71 @@ async fn run_redis_stream_consumer(
 
     let opts = StreamReadOptions::default()
         .group(GROUP_NAME, CONSUMER_NAME)
-        .count(10)
+        .count(1)
         .block(5000);
 
     loop {
-        let reply: redis::RedisResult<StreamReadReply> =
-            conn.xread_options(&[STREAM_NAME], &[">"], &opts).await;
-
-        match reply {
-            Ok(reply) => {
-                if reply.keys.is_empty() {
-                    continue;
+        tokio::select! {
+                _ = shutdown.cancelled() => {
+                        println!("Stream consumer: Shutting down...");
+                        break;
                 }
+                reply =
+                    conn.xread_options::<_, _, StreamReadReply>(&[STREAM_NAME], &[">"], &opts) => {
 
-                for stream_key in reply.keys {
-                    for stream_id in stream_key.ids {
-                        match process_stream_entry(&stream_id, &storage).await {
-                            Ok(s) => {
-                                for url in s {
-                                    if let Ok(u) = Url::parse(&url)
-                                        && !storage.insert_url_in_seen_urls(&u)
-                                    {
-                                        for i in 1..=3 {
-                                            if let Err(e) = tq.push(u.as_str()).await {
-                                                eprintln!(
-                                                    "Error during pushing sitemap to task queue: {}",
-                                                    e
-                                                );
-                                                if i == 3 {
-                                                    println!(
-                                                        "Couldnt push sitemap into task queue"
-                                                    );
-                                                    break;
+                match reply {
+                    Ok(reply) => {
+                        if reply.keys.is_empty() {
+                            continue;
+                        }
+
+                        for stream_key in reply.keys {
+                            for stream_id in stream_key.ids {
+                                match process_stream_entry(&stream_id, &storage).await {
+                                    Ok(s) => {
+                                        for url in s {
+                                            if let Ok(u) = Url::parse(&url)
+                                                && !storage.insert_url_in_seen_urls(&u)
+                                            {
+                                                for i in 1..=3 {
+                                                    if let Err(e) = tq.push(u.as_str()).await {
+                                                        eprintln!(
+                                                            "Error during pushing sitemap to task queue: {}",
+                                                            e
+                                                        );
+                                                        if i == 3 {
+                                                            println!(
+                                                                "Couldnt push sitemap into task queue"
+                                                            );
+                                                            break;
+                                                        }
+                                                        tokio::time::sleep(Duration::from_millis(200))
+                                                            .await;
+                                                    } else {
+                                                        break;
+                                                    }
                                                 }
-                                                tokio::time::sleep(Duration::from_millis(200))
-                                                    .await;
-                                            } else {
-                                                break;
                                             }
                                         }
+                                        let _: redis::RedisResult<i32> =
+                                            conn.xack(STREAM_NAME, GROUP_NAME, &[&stream_id.id]).await;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to process entry {}: {:?}", stream_id.id, e);
                                     }
                                 }
-                                let _: redis::RedisResult<i32> =
-                                    conn.xack(STREAM_NAME, GROUP_NAME, &[&stream_id.id]).await;
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to process entry {}: {:?}", stream_id.id, e);
                             }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("Redis stream read error: {}", e);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("Redis stream read error: {}", e);
-                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
+    println!("Stream consumer stopped cleanly.");
 }
 async fn process_stream_entry(
     entry: &redis::streams::StreamId,
@@ -134,14 +169,22 @@ async fn process_stream_entry(
     Ok(res)
 }
 
-pub async fn run_grpc_server(addr: std::net::SocketAddr, storage: CrawlerStorage) {
+pub async fn run_grpc_server(
+    addr: std::net::SocketAddr,
+    storage: CrawlerStorage,
+    shutdown: CancellationToken,
+) {
     let service = StorageGrpcService::new(storage);
 
-    if let Err(e) = tonic::transport::Server::builder()
+    let result = Server::builder()
         .add_service(StorageServiceServer::new(service))
-        .serve(addr)
-        .await
-    {
+        .serve_with_shutdown(addr, async move {
+            shutdown.cancelled().await;
+            println!("gRPC server shutting down...");
+        })
+        .await;
+
+    if let Err(e) = result {
         eprintln!("gRPC server error: {}", e);
     }
 }
@@ -151,7 +194,6 @@ mod tests {
     use super::*;
     use redis::streams::StreamId;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     fn make_stream_id(id: &str, payload: &str) -> StreamId {
         let mut map = HashMap::new();
@@ -308,8 +350,9 @@ mod tests {
 
         let consumer_conn = conn.clone();
         let storage_clone = storage.clone();
+        let sd = CancellationToken::new();
         let handle = tokio::spawn(async move {
-            run_redis_stream_consumer(consumer_conn, storage_clone, tq).await;
+            run_redis_stream_consumer(consumer_conn, storage_clone, tq, sd).await;
         });
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -356,7 +399,6 @@ mod tests {
     async fn test_grpc_check_url_allowed_unknown_domain() {
         let storage = test_storage().await;
         let addr = start_test_grpc_server(storage).await;
-
         let mut client = storage_proto::storage_service_client::StorageServiceClient::connect(
             format!("http://{}", addr),
         )
@@ -370,7 +412,11 @@ mod tests {
             .await
             .expect("grpc call failed");
 
-        assert_eq!(response.into_inner().access, "unknown_domain");
+        let access_i32 = response.into_inner().access;
+        let proto_access = storage_proto::UrlAccess::try_from(access_i32)
+            .expect("invalid UrlAccess value from server");
+
+        assert_eq!(proto_access, storage_proto::UrlAccess::UnknownDomain);
     }
 
     #[tokio::test]

@@ -6,13 +6,18 @@ service StorageService {
   rpc GetDelay (GetDelayRequest) returns (GetDelayResponse);
   rpc InsertUrl (InsertUrlRequest) returns (InsertUrlResponse);
 }
-
+enum UrlAccess {
+  ALLOWED = 0;
+  DISALLOWED = 1;
+  UNKNOWN_DOMAIN = 2;
+  URL_WITHOUT_HOST = 3;
+}
 message CheckUrlRequest {
   string url = 1;
 }
 
 message CheckUrlResponse {
-  string access = 1;
+  UrlAccess access = 1;
 }
 
 message GetDelayRequest {

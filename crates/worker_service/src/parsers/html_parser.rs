@@ -1,4 +1,4 @@
-use crate::network::url_info::NotParsedPageData;
+use common::network::url_info::NotParsedPageData;
 use common::parsers::parsed_data::ParsedPageSaveData;
 use scraper::{Html, Selector};
 use serde::Serialize;

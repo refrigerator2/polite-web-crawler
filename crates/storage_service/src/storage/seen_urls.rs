@@ -25,6 +25,7 @@ impl SeenUrls {
 mod tests {
     use super::*;
 
+    #[test]
     fn test_creating_and_inserting() {
         let su = SeenUrls::new();
         let url = Url::parse("https://www.google.com/").unwrap();

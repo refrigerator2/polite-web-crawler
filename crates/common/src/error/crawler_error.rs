@@ -25,4 +25,8 @@ pub enum CrawlerError {
     JoinError(#[from] tokio::task::JoinError),
     #[error("Serde error: {0}")]
     SerdeError(#[from] serde_json::Error),
+    #[error("Tonic transport error: {0}")]
+    TonicTransportError(#[from] tonic::transport::Error),
+    #[error("gRPC error: {0}")]
+    Grpc(#[from] tonic::Status),
 }
