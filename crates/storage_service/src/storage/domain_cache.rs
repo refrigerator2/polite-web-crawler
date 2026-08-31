@@ -1,9 +1,8 @@
+use common::error::crawler_error::CrawlerError;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
 use texting_robots::Robot;
-
-use crate::error::crawler_error::CrawlerError;
 
 #[derive(Clone, Debug)]
 pub struct CachedData {
@@ -31,7 +30,6 @@ impl CachedData {
         })
     }
 }
-
 #[derive(Clone)]
 pub struct DomainCache {
     cache: Cache<String, CachedData>,

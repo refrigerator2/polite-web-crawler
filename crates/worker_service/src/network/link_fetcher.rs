@@ -1,25 +1,17 @@
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT};
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
-use crate::error::crawler_error::CrawlerError;
+use common::{
+    error::crawler_error::CrawlerError,
+    network::url_info::{DomainData, NotParsedPageData},
+};
 
 const ATTEMPTS: i32 = 3;
 const DURATION: Duration = Duration::from_secs(1);
-
-pub struct NotParsedPageData {
-    pub url: Url,
-    pub content: String,
-}
-
-#[derive(Debug)]
-pub struct DomainData {
-    pub domain_string: String,
-    pub robots: Option<Arc<String>>,
-    pub delay: f32,
-}
 
 pub struct LinkFetcher {
     pub url: Url,

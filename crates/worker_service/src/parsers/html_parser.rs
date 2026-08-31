@@ -1,5 +1,7 @@
-use crate::network::link_fetcher::NotParsedPageData;
+use common::network::url_info::NotParsedPageData;
+use common::parsers::parsed_data::ParsedPageSaveData;
 use scraper::{Html, Selector};
+use serde::Serialize;
 use std::sync::Arc;
 use url::{ParseError, Url};
 
@@ -8,37 +10,35 @@ pub struct ParsedPage {
     pub description: Option<String>,
     pub clean_text: Option<String>,
     pub outbound_links: Vec<Url>,
-    pub keywords: Arc<Option<Vec<String>>>,
     pub url: Url,
-    pub keywords_in_it: bool,
 }
 impl ParsedPage {
-    pub fn parse(data: NotParsedPageData, keywords: Arc<Option<Vec<String>>>) -> ParsedPage {
-        let mut parsed_page = Self::init(&data, keywords);
+    pub fn parse(
+        data: NotParsedPageData,
+        keywords: Arc<Option<Vec<String>>>,
+    ) -> (bool, ParsedPage) {
+        let mut parsed_page = Self::init(&data);
 
         let doc = Html::parse_document(&data.content);
 
         parsed_page.set_clean_text(&doc);
-        if !parsed_page.is_keywords_in_html() {
+        if !parsed_page.is_keywords_in_html(keywords) {
             parsed_page.set_outbound_urls(&doc);
             parsed_page.clean_text = None;
-            return parsed_page;
+            return (false, parsed_page);
         }
         parsed_page.set_outbound_urls(&doc);
         parsed_page.set_description(&doc);
         parsed_page.set_title(&doc);
-        parsed_page.keywords_in_it = true;
-        parsed_page
+        (true, parsed_page)
     }
-    fn init(data: &NotParsedPageData, keywords: Arc<Option<Vec<String>>>) -> ParsedPage {
+    fn init(data: &NotParsedPageData) -> ParsedPage {
         ParsedPage {
             title: None,
             description: None,
             clean_text: None,
             outbound_links: vec![],
-            keywords,
             url: data.url.clone(),
-            keywords_in_it: false,
         }
     }
     fn set_outbound_urls(&mut self, doc: &Html) {
@@ -95,8 +95,8 @@ impl ParsedPage {
             })
             .filter(|title| !title.is_empty());
     }
-    fn is_keywords_in_html(&self) -> bool {
-        let keywords = match self.keywords.as_deref() {
+    fn is_keywords_in_html(&self, keywords: Arc<Option<Vec<String>>>) -> bool {
+        let keywords = match keywords.as_deref() {
             Some(keys) => keys,
             None => return true,
         };
@@ -188,7 +188,7 @@ mod tests {
         "#;
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default());
+        let (_, parsed) = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title.as_deref(), Some("Hello, World! — My Website"));
         assert_eq!(
@@ -210,7 +210,7 @@ mod tests {
         let html = "<body><p>Just text</p></body>";
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default());
+        let (_, parsed) = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title, None);
         assert_eq!(parsed.description, None);
@@ -231,7 +231,7 @@ mod tests {
         "##;
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default());
+        let (_, parsed) = ParsedPage::parse(npd, Arc::default());
         let urls = parsed.outbound_links;
 
         let expected_absolute = Url::parse("https://google.com/search?q=rust").unwrap();
@@ -250,11 +250,20 @@ mod tests {
         let html = "<title>Broken HTML<div>Hello! <a href='https://broken.com'>Link</p>";
 
         let npd = create_test_data(html);
-        let parsed = ParsedPage::parse(npd, Arc::default());
+        let (_, parsed) = ParsedPage::parse(npd, Arc::default());
 
         assert_eq!(parsed.title.as_deref(), Some("Broken HTML"));
         assert_eq!(parsed.clean_text.as_deref(), Some("Broken HTML"));
         //let expected_url = Url::parse("https://broken.com").unwrap();
         //assert!(parsed.outbound_links.contains(&expected_url));
+    }
+}
+
+pub fn convert_parsed_page_to_save_data(page: &ParsedPage) -> ParsedPageSaveData {
+    ParsedPageSaveData {
+        title: page.title.clone(),
+        description: page.description.clone(),
+        clean_text: page.clean_text.clone(),
+        url: page.url.to_string(),
     }
 }
