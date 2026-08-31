@@ -119,10 +119,21 @@ impl CrawlerStorage {
         dom_id: i64,
         page: &ParsedPageSaveData,
     ) -> Result<(), CrawlerError> {
+        println!("Saving: {}", page.url);
         if let Some(txt) = page.clean_text.clone() {
-            if !self.dedup.is_duplicate(&txt) {
-                let h = self.dedup.insert(&txt);
-                self.db.save_parsed_page(dom_id, page, Some(h)).await?;
+            let dedup_clone = self.dedup.clone();
+            let (is_dup, hash) = tokio::task::spawn_blocking(move || {
+                let is_dup = dedup_clone.is_duplicate(&txt);
+                let hash = if !is_dup {
+                    Some(dedup_clone.insert(&txt))
+                } else {
+                    None
+                };
+                (is_dup, hash)
+            })
+            .await?;
+            if !is_dup {
+                self.db.save_parsed_page(dom_id, page, hash).await?;
             }
         } else {
             self.db.save_parsed_page(dom_id, page, None).await?;

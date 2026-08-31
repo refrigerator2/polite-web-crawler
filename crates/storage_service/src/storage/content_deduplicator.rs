@@ -1,16 +1,29 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+const BAND_NUM: usize = 8;
+const BAND_BITS: usize = 8;
 #[derive(Clone)]
 pub struct ContentDeduplicator {
-    hashes: Arc<RwLock<Vec<u64>>>,
+    bands: Arc<RwLock<Vec<HashMap<u16, Vec<u64>>>>>,
     max_dist: u32,
 }
 impl ContentDeduplicator {
     pub fn init(hashes: Vec<u64>, dist: u32) -> Self {
+        let mut bands: Vec<HashMap<u16, Vec<u64>>> = vec![HashMap::new(); BAND_NUM];
+        for h in &hashes {
+            for band_id in 0..BAND_NUM {
+                let band_value = Self::extract_band(*h, band_id);
+                bands[band_id].entry(band_value).or_default().push(*h);
+            }
+        }
         Self {
-            hashes: Arc::new(RwLock::new(hashes)),
+            bands: Arc::new(RwLock::new(bands)),
             max_dist: dist,
         }
+    }
+    fn extract_band(hash: u64, band_id: usize) -> u16 {
+        (hash >> (band_id * BAND_BITS)) as u16
     }
     fn calculate_hash(text: &str) -> u64 {
         let cleaned_text = text
@@ -30,16 +43,37 @@ impl ContentDeduplicator {
     }
     pub fn is_duplicate(&self, text: &str) -> bool {
         let text_hash = Self::calculate_hash(text);
-        let hashes = self.hashes.read().unwrap();
-        hashes
-            .iter()
-            .any(|h| simhash::hamming_distance(*h, text_hash) <= self.max_dist)
+        let bands = self.bands.read().unwrap();
+        for band_id in 0..BAND_NUM {
+            let band_value = Self::extract_band(text_hash, band_id);
+            if let Some(candidates) = bands[band_id].get(&band_value) {
+                if candidates
+                    .iter()
+                    .any(|h| simhash::hamming_distance(*h, text_hash) <= self.max_dist)
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
     pub fn insert(&self, text: &str) -> u64 {
         let new_hash = Self::calculate_hash(text);
-        let mut guard = self.hashes.write().unwrap();
-        guard.push(new_hash);
+        let mut guard = self.bands.write().unwrap();
+        for band_id in 0..BAND_NUM {
+            let band_value = Self::extract_band(new_hash, band_id);
+            guard[band_id].entry(band_value).or_default().push(new_hash);
+        }
         new_hash
+    }
+    pub fn debug_max_bucket_size(&self) -> usize {
+        let bands = self.bands.read().unwrap();
+        bands
+            .iter()
+            .flat_map(|band| band.values())
+            .map(|v| v.len())
+            .max()
+            .unwrap_or(0)
     }
 }
 #[cfg(test)]
@@ -64,6 +98,6 @@ mod tests {
         assert!(!dedup.is_duplicate(text2));
         dedup.insert(text2);
 
-        assert_eq!(dedup.hashes.read().unwrap().len(), 2);
+        assert!(dedup.is_duplicate(text2));
     }
 }
