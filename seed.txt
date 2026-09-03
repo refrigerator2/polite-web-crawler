@@ -1,0 +1,5 @@
+https://en.wikipedia.org/wiki/Web_crawler
+https://docs.rs
+https://blog.rust-lang.org
+https://news.ycombinator.com
+https://developer.mozilla.org

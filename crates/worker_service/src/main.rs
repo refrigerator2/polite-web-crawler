@@ -6,13 +6,13 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-const TOKIO_WORKERS: usize = 128;
+const TOKIO_WORKERS: usize = 16;
 const DEFAULT_DB_NAME: &str = "crawler";
 
 #[derive(Parser, Debug)]
 pub struct Args {
-    #[arg(short, long, value_parser = parse_url)]
-    pub url: Url,
+    #[arg(short, long)]
+    pub url: Option<String>,
     #[arg(short, long, num_args = 1..)]
     pub keywords: Option<Vec<String>>,
     #[arg(short, long)]
@@ -23,10 +23,6 @@ pub struct Args {
     pub agent_name: Option<String>,
     #[arg(short, long)]
     pub limit: Option<u64>,
-}
-
-fn parse_url(url: &str) -> Result<Url, String> {
-    Url::parse(url).map_err(|e| format!("{e}"))
 }
 
 #[tokio::main]

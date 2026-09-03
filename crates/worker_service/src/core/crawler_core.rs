@@ -3,11 +3,13 @@ use crate::{
     network::{domain_rate_limiter::DomainRateLimiter, link_fetcher::LinkFetcher},
     parsers::{html_parser::ParsedPage, sitemaps_parser::SitemapsParser},
 };
+use clap::builder::Str;
 use common::DEFAULT_AGENT_NAME;
 use common::{
     CRAWLER_TASK_QUEUE_NAME, error::crawler_error::CrawlerError, network::url_info::UrlAccess,
     task_queue::task_queue::TaskQueue,
 };
+use std::fs;
 use std::{
     sync::{
         Arc, Mutex,
@@ -56,7 +58,7 @@ impl CrawlerCore {
 
     pub async fn run(
         &self,
-        start_url: Url,
+        start_url: Option<String>,
         shutdown: CancellationToken,
     ) -> Result<(), CrawlerError> {
         let redis_addr =
@@ -66,32 +68,78 @@ impl CrawlerCore {
         let storage_grpc_addr =
             std::env::var("STORAGE_GRPC_ADDR").unwrap_or("http://127.0.0.1:50051".to_string());
         let storage = StorageClient::new(storage_grpc_addr, redis_addr).await?;
-
-        task_queue.push(start_url.as_str()).await?;
-        self.active_tasks.store(1, Ordering::SeqCst);
-        self.pages_crawled.store(0, Ordering::SeqCst);
-        let first_url_insert = storage.insert_url(start_url.as_str()).await;
-        if let Err(e) = first_url_insert {
-            eprintln!("{e}");
-            return Err(e);
+        if let Some(u) = start_url {
+            match task_queue.is_empty().await {
+                Ok(is_em) => {
+                    if !is_em {
+                        task_queue.clean_queue().await?;
+                    }
+                    let parsed_url = Url::parse(&u)?;
+                    task_queue.push(parsed_url.as_str()).await?;
+                    self.active_tasks.store(1, Ordering::SeqCst);
+                    let first_url_insert = storage.insert_url(parsed_url.as_str()).await;
+                    if let Err(e) = first_url_insert {
+                        eprintln!("{e}");
+                        return Err(e);
+                    }
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        } else {
+            match task_queue.is_empty().await {
+                Ok(is_em) => {
+                    if is_em {
+                        let seed = fs::read_to_string("../../seed.txt")?;
+                        let urls = seed.split_whitespace();
+                        let mut filtered = Vec::new();
+                        for u in urls {
+                            if Url::parse(u).is_ok() {
+                                let url_insert_res = storage.insert_url(u).await;
+                                if let Err(e) = url_insert_res {
+                                    eprintln!("{e}");
+                                }
+                                filtered.push(u.to_string());
+                            }
+                        }
+                        if filtered.is_empty() {
+                            println!("Seed.txt is empty or urls are incorrect");
+                            return Ok(());
+                        }
+                        let pushed = task_queue.push_bulk(filtered.as_slice()).await?;
+                        self.active_tasks.store(pushed, Ordering::SeqCst);
+                    } else {
+                        match task_queue.len().await {
+                            Ok(l) => self.active_tasks.store(l, Ordering::SeqCst),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
+        self.pages_crawled.store(0, Ordering::SeqCst);
+
         let mut workers = vec![];
+
+        let drl = DomainRateLimiter::new(Duration::from_secs(1));
 
         for _ in 0..self.tokio_workers {
             let keywords_clone = Arc::clone(&self.keywords);
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
-            let drl = DomainRateLimiter::new(Duration::from_secs(1));
             let storage_clone = storage.clone();
             let task_queue_clone = task_queue.clone();
             let shutdown_clone = shutdown.clone();
+            let drl_clone = drl.clone();
             let handle = tokio::spawn(async move {
                 Self::worker_loop(
                     task_queue_clone,
                     keywords_clone,
                     counter_clone,
                     active_tasks_clone,
-                    drl.clone(),
+                    drl_clone,
                     storage_clone,
                     shutdown_clone,
                 )
@@ -105,7 +153,7 @@ impl CrawlerCore {
                     println!("Shutdowning workers...");
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {
             if self.active_tasks.load(Ordering::SeqCst) == 0
                 || self
                     .limit
