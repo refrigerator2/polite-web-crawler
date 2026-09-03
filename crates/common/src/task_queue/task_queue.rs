@@ -54,6 +54,21 @@ impl TaskQueue {
 
         Ok(None)
     }
+    pub async fn is_empty(&self) -> Result<bool, CrawlerError> {
+        let mut conn = self.pop_queue.clone();
+        let len: usize = conn.llen(self.name.clone()).await?;
+        Ok(len == 0)
+    }
+    pub async fn len(&self) -> Result<usize, CrawlerError> {
+        let mut conn = self.pop_queue.clone();
+        let len: usize = conn.llen(self.name.clone()).await?;
+        Ok(len)
+    }
+    pub async fn clean_queue(&self) -> Result<(), CrawlerError> {
+        let mut conn = self.pop_queue.clone();
+        let _: () = conn.del(&self.name).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -73,6 +88,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_and_pop_single_item() {
         let queue = setup_test_queue().await;
+        assert!(queue.is_empty().await.unwrap());
         let test_url = Url::parse("https://example.com/rust").unwrap();
 
         queue
@@ -83,6 +99,7 @@ mod tests {
         let popped_url = queue.pop_front().await.expect("Error while popping");
 
         assert_eq!(popped_url.expect("Mustn't be None"), test_url);
+        assert!(queue.is_empty().await.unwrap())
     }
 
     #[tokio::test]
@@ -95,6 +112,8 @@ mod tests {
         queue.push(url1.as_str()).await.unwrap();
         queue.push(url2.as_str()).await.unwrap();
         queue.push(url3.as_str()).await.unwrap();
+
+        assert_eq!(queue.len().await.unwrap(), 3);
 
         assert_eq!(queue.pop_front().await.unwrap(), Some(url1));
         assert_eq!(queue.pop_front().await.unwrap(), Some(url2));
@@ -179,5 +198,21 @@ mod tests {
         assert_eq!(inserted_count, 0);
 
         assert_eq!(queue.pop_front().await.unwrap(), None);
+    }
+    #[tokio::test]
+    async fn test_clean() {
+        let queue = setup_test_queue().await;
+        let url1 = Url::parse("https://example.com/1").unwrap();
+        let url2 = Url::parse("https://example.com/2").unwrap();
+        let url3 = Url::parse("https://example.com/3").unwrap();
+
+        queue.push(url1.as_str()).await.unwrap();
+        queue.push(url2.as_str()).await.unwrap();
+        queue.push(url3.as_str()).await.unwrap();
+
+        assert!(!queue.is_empty().await.unwrap());
+        let res = queue.clean_queue().await;
+        assert_eq!(res.unwrap(), ());
+        assert!(queue.is_empty().await.unwrap())
     }
 }
