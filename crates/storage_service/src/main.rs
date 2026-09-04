@@ -11,6 +11,7 @@ use redis::AsyncCommands;
 use redis::aio::ConnectionManagerConfig;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis::{self, aio::ConnectionManager};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use storage::crawler_storage::CrawlerStorage;
 use tokio_util::sync::CancellationToken;
@@ -64,7 +65,10 @@ async fn main() -> Result<(), CrawlerError> {
     println!("Shutdown signal received");
     shutdown.cancel();
     let _ = tokio::try_join!(stream_consumer_task, grpc_server_task)?;
-
+    println!(
+        "Saved: {} pages",
+        storage.saved_counter.load(Ordering::SeqCst)
+    );
     Ok(())
 }
 
@@ -87,7 +91,7 @@ async fn run_redis_stream_consumer(
 
     let opts = StreamReadOptions::default()
         .group(GROUP_NAME, CONSUMER_NAME)
-        .count(1)
+        .count(10)
         .block(5000);
 
     loop {

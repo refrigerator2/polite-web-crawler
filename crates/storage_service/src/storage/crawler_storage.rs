@@ -8,7 +8,13 @@ use common::{
     parsers::parsed_data::{DomainDataSaveData, ParsedData, ParsedPageSaveData},
 };
 use std::path::Path;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 use texting_robots::Robot;
 use url::Url;
 
@@ -19,6 +25,7 @@ pub struct CrawlerStorage {
     domain_cache: DomainCache,
     pub agent_name: String,
     dedup: ContentDeduplicator,
+    pub saved_counter: Arc<AtomicUsize>,
 }
 impl CrawlerStorage {
     pub async fn new(db_name: &str, user_agent: String) -> Result<Self, CrawlerError> {
@@ -36,6 +43,7 @@ impl CrawlerStorage {
             domain_cache: DomainCache::new(Duration::from_secs(360), 20),
             agent_name: user_agent,
             dedup: ContentDeduplicator::init(hashes, 3),
+            saved_counter: Arc::new(AtomicUsize::new(0)),
         })
     }
     pub async fn save_parsed_data(&self, data: ParsedData) -> Result<Vec<String>, CrawlerError> {
@@ -52,6 +60,7 @@ impl CrawlerStorage {
                     .await?
                     .ok_or_else(|| CrawlerError::UrlDoesntContainDomain())?;
                 self.save_parsed_page(id, &pp).await?;
+                self.saved_counter.fetch_add(1, Ordering::SeqCst);
                 Ok(vec![])
             }
             ParsedData::ParsedDomain(dd) => {
@@ -119,7 +128,6 @@ impl CrawlerStorage {
         dom_id: i64,
         page: &ParsedPageSaveData,
     ) -> Result<(), CrawlerError> {
-        println!("Saving: {}", page.url);
         if let Some(txt) = page.clean_text.clone() {
             let dedup_clone = self.dedup.clone();
             let (is_dup, hash) = tokio::task::spawn_blocking(move || {
