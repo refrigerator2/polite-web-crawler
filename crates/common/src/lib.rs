@@ -4,7 +4,7 @@ pub mod parsers;
 pub mod task_queue;
 pub const STREAM_NAME: &str = "crawler_events";
 pub const CRAWLER_TASK_QUEUE_NAME: &str = "crawler_queue";
-pub const DEFAULT_AGENT_NAME: &str = "Aah";
+pub const DEFAULT_AGENT_NAME: &str = "EDUCATIONAL_CRAWLER";
 pub async fn wait_for_shutdown_signal() {
     use tokio::signal;
 

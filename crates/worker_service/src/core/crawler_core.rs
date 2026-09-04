@@ -29,9 +29,7 @@ impl Drop for TaskGuard {
 }
 pub struct CrawlerCore {
     keywords: Arc<Option<Vec<String>>>,
-    db_name: String,
     tokio_workers: usize,
-    agent_name: String,
     limit: Option<u64>,
     pages_crawled: Arc<AtomicUsize>,
     active_tasks: Arc<AtomicUsize>,
@@ -40,16 +38,12 @@ pub struct CrawlerCore {
 impl CrawlerCore {
     pub async fn new(
         keywords: Arc<Option<Vec<String>>>,
-        db_name: String,
         tokio_workers: usize,
-        agent_name: String,
         limit: Option<u64>,
     ) -> Result<CrawlerCore, CrawlerError> {
         Ok(CrawlerCore {
             keywords,
-            db_name,
             tokio_workers,
-            agent_name,
             limit,
             pages_crawled: Arc::new(AtomicUsize::new(0)),
             active_tasks: Arc::new(AtomicUsize::new(0)),
@@ -153,7 +147,7 @@ impl CrawlerCore {
                     println!("Shutdowning workers...");
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                _ = tokio::time::sleep(Duration::from_millis(1000)) => {
             if self.active_tasks.load(Ordering::SeqCst) == 0
                 || self
                     .limit
