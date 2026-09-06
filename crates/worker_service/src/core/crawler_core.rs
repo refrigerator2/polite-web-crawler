@@ -4,11 +4,11 @@ use crate::{
     parsers::{html_parser::ParsedPage, sitemaps_parser::SitemapsParser},
 };
 use clap::builder::Str;
-use common::DEFAULT_AGENT_NAME;
 use common::{
     CRAWLER_TASK_QUEUE_NAME, error::crawler_error::CrawlerError, network::url_info::UrlAccess,
     task_queue::task_queue::TaskQueue,
 };
+use common::{DEFAULT_AGENT_NAME, ENV_REDIS_URL, ENV_STORAGE_GRPC_ADDR};
 use std::fs;
 use std::{
     sync::{
@@ -20,7 +20,8 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
-
+const SEED_FILE_CONTENT: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed.txt"));
 pub struct TaskGuard(Arc<AtomicUsize>);
 impl Drop for TaskGuard {
     fn drop(&mut self) {
@@ -56,11 +57,11 @@ impl CrawlerCore {
         shutdown: CancellationToken,
     ) -> Result<(), CrawlerError> {
         let redis_addr =
-            std::env::var("REDIS_ADDR").unwrap_or("redis://127.0.0.1:6379".to_string());
+            std::env::var(ENV_REDIS_URL).unwrap_or("redis://127.0.0.1:6379".to_string());
         let task_queue = TaskQueue::new(&redis_addr, CRAWLER_TASK_QUEUE_NAME, 5.0).await?;
 
         let storage_grpc_addr =
-            std::env::var("STORAGE_GRPC_ADDR").unwrap_or("http://127.0.0.1:50051".to_string());
+            std::env::var(ENV_STORAGE_GRPC_ADDR).unwrap_or("http://127.0.0.1:50051".to_string());
         let storage = StorageClient::new(storage_grpc_addr, redis_addr).await?;
         if let Some(u) = start_url {
             match task_queue.is_empty().await {
@@ -85,8 +86,7 @@ impl CrawlerCore {
             match task_queue.is_empty().await {
                 Ok(is_em) => {
                     if is_em {
-                        let seed = fs::read_to_string("../../seed.txt")?;
-                        let urls = seed.split_whitespace();
+                        let urls = SEED_FILE_CONTENT.split_whitespace();
                         let mut filtered = Vec::new();
                         for u in urls {
                             if Url::parse(u).is_ok() {
