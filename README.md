@@ -5,20 +5,19 @@ A microservice web crawler written in Rust. It respects `robots.txt`, rate-limit
 ## Architecture
 
 ```
-mermaid
 flowchart LR
-    W[worker_service<br/>downloads and parses pages]
-    S[storage_service<br/>database, caches, deduplication]
-    Q[(Redis List<br/>task queue)]
-    R[(Redis Stream<br/>crawler_events)]
-    D[(SQLite<br/>./data)]
+    W["worker_service<br/>downloads and parses pages"]
+    S["storage_service<br/>database, caches, deduplication"]
+    Q[("Redis List<br/>task queue")]
+    R[("Redis Stream<br/>crawler_events")]
+    D[("SQLite<br/>./data")]
 
-    W -- "gRPC request:<br/>is URL allowed / seen?" --> S
-    S -- "gRPC response" --> W
-    W -- "parsed pages and domains" --> R
-    R -- "consumed + XACK" --> S
-    W -- "pop URLs / push found links" <--> Q
-    S -- "push sitemap URLs" --> Q
+    W -->|"gRPC request: is URL allowed / seen?"| S
+    S -->|"gRPC response"| W
+    W -->|"parsed pages and domains"| R
+    R -->|"consumed + XACK"| S
+    W <-->|"pop URLs / push found links"| Q
+    S -->|"push sitemap URLs"| Q
     S --> D
 ```
 
