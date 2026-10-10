@@ -3,3 +3,5 @@
 todo.txt
 *.db-wal
 *.db-shm
+*.rdb
+/data/

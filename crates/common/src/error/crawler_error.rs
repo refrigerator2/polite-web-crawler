@@ -28,5 +28,7 @@ pub enum CrawlerError {
     #[error("Tonic transport error: {0}")]
     TonicTransportError(#[from] tonic::transport::Error),
     #[error("gRPC error: {0}")]
-    Grpc(#[from] tonic::Status),
+    GrpcError(#[from] tonic::Status),
+    #[error("FS error: {0}")]
+    FilesError(#[from] std::io::Error),
 }

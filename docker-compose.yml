@@ -1,23 +1,65 @@
-version: "3.8"
-
 services:
   redis:
     image: redis:7-alpine
-    container_name: crawler-redis
     ports:
       - "6379:6379"
-    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - redis_data:/data
 
   storage_service:
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE_NAME: storage_service
-    container_name: crawler-storage
+      dockerfile: crates/storage_service/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
     environment:
       - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
+      - STORAGE_LISTEN_ADDR=0.0.0.0:50051
+      - DB_PATH=data/crawler.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 50051 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  worker_service:
+    build:
+      context: .
+      dockerfile: crates/worker_service/Dockerfile
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
-      - redis
-    restart: on-failure
+      redis:
+        condition: service_healthy
+      storage_service:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - STORAGE_GRPC_ADDR=http://storage_service:50051
+      - SEED_URL=${SEED_URL:-}
+      - WORKERS=${WORKERS:-}
+      - LIMIT=${LIMIT:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ARGS=""
+        [ -n "$$SEED_URL" ] && ARGS="$$ARGS --url=$$SEED_URL"
+        [ -n "$$WORKERS" ] && ARGS="$$ARGS --tokio-workers=$$WORKERS"
+        [ -n "$$LIMIT" ] && ARGS="$$ARGS --limit=$$LIMIT"
+        exec crawler-worker $$ARGS
+
+volumes:
+  redis_data:
