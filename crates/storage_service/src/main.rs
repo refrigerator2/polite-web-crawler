@@ -1,11 +1,13 @@
 pub mod grpc;
 pub mod storage;
 use crate::storage_proto::storage_service_server::StorageServiceServer;
+use common::DEFAULT_AGENT_NAME;
 use common::error::crawler_error::CrawlerError;
 use common::parsers::parsed_data::ParsedData;
 use common::task_queue::task_queue::TaskQueue;
 use common::wait_for_shutdown_signal;
 use common::{CRAWLER_TASK_QUEUE_NAME, STREAM_NAME};
+use common::{ENV_REDIS_URL, ENV_STORAGE_LISTEN_ADDR};
 use grpc::crawler_storage_grpc_service::StorageGrpcService;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManagerConfig;
@@ -17,7 +19,6 @@ use storage::crawler_storage::CrawlerStorage;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use url::Url;
-
 pub mod storage_proto {
     tonic::include_proto!("storage");
 }
@@ -28,9 +29,10 @@ const CONSUMER_NAME: &str = "storage_consumer_1";
 async fn main() -> Result<(), CrawlerError> {
     dotenvy::from_path("../../../.env").ok();
     let redis_addr =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        std::env::var(ENV_REDIS_URL).unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
-    let storage = CrawlerStorage::new("crawler.db", "MyBot/1.0".to_string()).await?;
+    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "data/crawler.db".to_string());
+    let storage = CrawlerStorage::new(&db_path, DEFAULT_AGENT_NAME.to_string()).await?;
     let client = redis::Client::open(redis_addr.clone())?;
     let shutdown = CancellationToken::new();
 
@@ -50,7 +52,7 @@ async fn main() -> Result<(), CrawlerError> {
 
     let storage_reader = storage.clone();
     let grpc_listen_addr =
-        std::env::var("STORAGE_LISTEN_ADDR").unwrap_or("0.0.0.0:50051".to_string());
+        std::env::var(ENV_STORAGE_LISTEN_ADDR).unwrap_or("0.0.0.0:50051".to_string());
     let grpc_shutdown = shutdown.clone();
     let grpc_server_task = tokio::spawn(async move {
         run_grpc_server(
