@@ -4,7 +4,7 @@ A microservice web crawler written in Rust. It respects `robots.txt`, rate-limit
 
 ## Architecture
 
-```
+```mermaid
 flowchart LR
     W["worker_service<br/>downloads and parses pages"]
     S["storage_service<br/>database, caches, deduplication"]
