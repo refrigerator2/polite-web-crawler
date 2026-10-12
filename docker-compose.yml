@@ -60,6 +60,8 @@ services:
         [ -n "$$WORKERS" ] && ARGS="$$ARGS --tokio-workers=$$WORKERS"
         [ -n "$$LIMIT" ] && ARGS="$$ARGS --limit=$$LIMIT"
         exec crawler-worker $$ARGS
-
+    volumes:
+      - ./seed.txt:/app/seed.txt:ro
+      - ./keywords.txt:/app/keywords.txt:ro
 volumes:
   redis_data:

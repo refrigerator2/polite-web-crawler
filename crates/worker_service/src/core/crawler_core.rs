@@ -20,8 +20,6 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
-const SEED_FILE_CONTENT: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed.txt"));
 pub struct TaskGuard(Arc<AtomicUsize>);
 impl Drop for TaskGuard {
     fn drop(&mut self) {
@@ -29,7 +27,6 @@ impl Drop for TaskGuard {
     }
 }
 pub struct CrawlerCore {
-    keywords: Arc<Option<Vec<String>>>,
     tokio_workers: usize,
     limit: Option<u64>,
     pages_crawled: Arc<AtomicUsize>,
@@ -38,12 +35,10 @@ pub struct CrawlerCore {
 
 impl CrawlerCore {
     pub async fn new(
-        keywords: Arc<Option<Vec<String>>>,
         tokio_workers: usize,
         limit: Option<u64>,
     ) -> Result<CrawlerCore, CrawlerError> {
         Ok(CrawlerCore {
-            keywords,
             tokio_workers,
             limit,
             pages_crawled: Arc::new(AtomicUsize::new(0)),
@@ -86,7 +81,10 @@ impl CrawlerCore {
             match task_queue.is_empty().await {
                 Ok(is_em) => {
                     if is_em {
-                        let urls = SEED_FILE_CONTENT.split_whitespace();
+                        let seed_path =
+                            std::env::var("SEED_FILE").unwrap_or_else(|_| "seed.txt".to_string());
+                        let seed = std::fs::read_to_string(&seed_path)?;
+                        let urls = seed.split_whitespace();
                         let mut filtered = Vec::new();
                         for u in urls {
                             if Url::parse(u).is_ok() {
@@ -120,7 +118,6 @@ impl CrawlerCore {
         let drl = DomainRateLimiter::new(Duration::from_secs(1));
 
         for _ in 0..self.tokio_workers {
-            let keywords_clone = Arc::clone(&self.keywords);
             let counter_clone = Arc::clone(&self.pages_crawled);
             let active_tasks_clone = Arc::clone(&self.active_tasks);
             let storage_clone = storage.clone();
@@ -130,7 +127,6 @@ impl CrawlerCore {
             let handle = tokio::spawn(async move {
                 Self::worker_loop(
                     task_queue_clone,
-                    keywords_clone,
                     counter_clone,
                     active_tasks_clone,
                     drl_clone,
@@ -175,7 +171,6 @@ impl CrawlerCore {
 
     async fn worker_loop(
         task_queue: TaskQueue,
-        keywords: Arc<Option<Vec<String>>>,
         counter: Arc<AtomicUsize>,
         active_tasks: Arc<AtomicUsize>,
         drl: DomainRateLimiter,
@@ -207,9 +202,7 @@ impl CrawlerCore {
                 continue;
             }
             let _task_guard = TaskGuard(Arc::clone(&active_tasks));
-            match Self::process_single_url(&url, &keywords, &counter, drl.clone(), storage.clone())
-                .await
-            {
+            match Self::process_single_url(&url, &counter, drl.clone(), storage.clone()).await {
                 Ok(mut outbound_links) => {
                     outbound_links.sort();
                     outbound_links.dedup();
@@ -259,7 +252,6 @@ impl CrawlerCore {
 
     async fn process_single_url(
         url: &Url,
-        keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
         drl: DomainRateLimiter,
         storage: StorageClient,
@@ -282,7 +274,7 @@ impl CrawlerCore {
                     return Ok(sitemaps_parser.parse().await);
                 }
 
-                Self::handle_allowed_domain(url, keywords, counter, storage.clone()).await
+                Self::handle_allowed_domain(url, counter, storage.clone()).await
             }
             UrlAccess::Disallowed => Err(CrawlerError::NotAllowed()),
             UrlAccess::URLWithoutHost => Err(CrawlerError::UrlDoesntContainDomain()),
@@ -304,7 +296,6 @@ impl CrawlerCore {
 
     async fn handle_allowed_domain(
         url: &Url,
-        keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
         storage: StorageClient,
     ) -> Result<Vec<Url>, CrawlerError> {
@@ -313,18 +304,17 @@ impl CrawlerCore {
         let delay = storage.get_delay(host).await?;
 
         let link_fetcher = LinkFetcher::new(url.clone(), delay);
-        Self::download_and_parse_link(link_fetcher, keywords, counter, storage.clone()).await
+        Self::download_and_parse_link(link_fetcher, counter, storage.clone()).await
     }
 
     async fn download_and_parse_link(
         link_fetcher: LinkFetcher,
-        keywords: &Arc<Option<Vec<String>>>,
         counter: &Arc<AtomicUsize>,
         storage: StorageClient,
     ) -> Result<Vec<Url>, CrawlerError> {
         let raw_html_data = link_fetcher.get_page().await?;
 
-        let (keywords_in_it, parsed_page) = ParsedPage::parse(raw_html_data, Arc::clone(keywords));
+        let (keywords_in_it, parsed_page) = ParsedPage::parse(raw_html_data);
 
         if keywords_in_it {
             Self::save_results_to_db(&parsed_page, counter, storage.clone()).await?;
