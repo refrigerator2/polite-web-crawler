@@ -43,7 +43,9 @@ flowchart LR
 - URL deduplication using a Bloom filter
 - Graceful shutdown for both services
 - One-command startup with Docker Compose
-
+- seed.txt file, where you can write all multiple start urls
+- keywords.txt file, where you can add keywords, which crawler will search in texts and store only texts with this words
+(URLs and words should be written on separate lines in the file)
 ## Tech stack
 
 Rust, Tokio, tonic (gRPC), Redis (Streams and Lists), SQLite (sqlx), Docker Compose
@@ -113,6 +115,7 @@ sqlite3 ./data/crawler.db ".tables"
 │   └── worker_service/    # crawler
 ├── proto/                 # gRPC contract
 ├── seed.txt               # default starting URLs
+├── keywords.txt           # keywords for filtering(empty by default) 
 └── docker-compose.yml
 ```
 
@@ -130,7 +133,5 @@ cargo test --workspace -- --ignored   # integration tests, require Docker
 ```
 
 Building locally requires `rustup`, `protobuf`, and `cmake`.
-
-## Ethical use
 
 The crawler respects `robots.txt` and limits load on domains, but only run it against sites you are allowed to crawl. Avoid high `WORKERS` values on third-party sites.
