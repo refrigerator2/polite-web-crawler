@@ -12,8 +12,6 @@ const TOKIO_WORKERS: usize = 16;
 pub struct Args {
     #[arg(short, long)]
     pub url: Option<String>,
-    #[arg(short, long, num_args = 1..)]
-    pub keywords: Option<Vec<String>>,
     #[arg(short, long)]
     pub tokio_workers: Option<usize>,
     #[arg(short, long)]
@@ -25,10 +23,9 @@ async fn main() -> Result<(), CrawlerError> {
     dotenvy::from_path("../../../.env").ok();
     let args = Args::parse();
     let url = args.url;
-    let keywords = Arc::new(args.keywords);
     let tw = args.tokio_workers.unwrap_or(TOKIO_WORKERS);
 
-    let core = CrawlerCore::new(keywords, tw, args.limit).await?;
+    let core = CrawlerCore::new(tw, args.limit).await?;
     let shutdown = CancellationToken::new();
     let shutdown_clone = shutdown.clone();
     tokio::spawn(async move {

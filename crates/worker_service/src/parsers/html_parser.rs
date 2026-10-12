@@ -2,7 +2,8 @@ use common::network::url_info::NotParsedPageData;
 use common::parsers::parsed_data::ParsedPageSaveData;
 use scraper::{Html, Selector};
 use serde::Serialize;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::{str::SplitWhitespace, sync::Arc};
 use url::{ParseError, Url};
 
 pub struct ParsedPage {
@@ -13,16 +14,17 @@ pub struct ParsedPage {
     pub url: Url,
 }
 impl ParsedPage {
-    pub fn parse(
-        data: NotParsedPageData,
-        keywords: Arc<Option<Vec<String>>>,
-    ) -> (bool, ParsedPage) {
+    pub fn parse(data: NotParsedPageData) -> (bool, ParsedPage) {
         let mut parsed_page = Self::init(&data);
 
         let doc = Html::parse_document(&data.content);
 
         parsed_page.set_clean_text(&doc);
-        if !parsed_page.is_keywords_in_html(keywords) {
+        let path = std::env::var("KEYWORDS_FILE").unwrap_or_else(|_| "keywords.txt".to_string());
+        let keywords: Vec<String> = std::fs::read_to_string(&path)
+            .map(|s| s.split_whitespace().map(String::from).collect())
+            .unwrap_or_default();
+        if !keywords.is_empty() && !parsed_page.is_keywords_in_html(&keywords) {
             parsed_page.set_outbound_urls(&doc);
             parsed_page.clean_text = None;
             return (false, parsed_page);
@@ -95,24 +97,21 @@ impl ParsedPage {
             })
             .filter(|title| !title.is_empty());
     }
-    fn is_keywords_in_html(&self, keywords: Arc<Option<Vec<String>>>) -> bool {
-        let keywords = match keywords.as_deref() {
-            Some(keys) => keys,
-            None => return true,
-        };
-
+    fn tokenize(&self, text: &str) -> HashSet<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(|w| w.to_lowercase())
+            .collect()
+    }
+    fn is_keywords_in_html(&self, keywords: &[String]) -> bool {
         let text = match self.clean_text.as_deref() {
             Some(t) => t,
             None => return false,
         };
-
-        for key in keywords {
-            if !text.contains(key) {
-                return false;
-            }
-        }
-
-        true
+        let tokenized_text = Self::tokenize(self, &text);
+        keywords
+            .iter()
+            .any(|k| tokenized_text.contains(&k.to_lowercase()))
     }
     fn set_clean_text(&mut self, doc: &Html) {
         let mut clean_text = String::new();
